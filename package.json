@@ -1,0 +1,8 @@
+{
+  "name": "course-pilot",
+  "private": true,
+  "scripts": {
+    "check": "node --check background.js && node --check content.js && node --check page-cleaner.js && node --check sidepanel.js",
+    "test": "node --test tests/page-cleaner.test.js"
+  }
+}

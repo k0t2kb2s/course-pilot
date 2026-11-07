@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="360" height="680" viewBox="0 0 360 680" font-family="Inter, -apple-system, Segoe UI, Roboto, sans-serif">
+  <defs>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7c5cff"/>
+      <stop offset="1" stop-color="#4f8bff"/>
+    </linearGradient>
+    <radialGradient id="glowTop" cx="1" cy="0" r="1">
+      <stop offset="0" stop-color="#7c5cff" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#7c5cff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowBottom" cx="0" cy="1" r="1">
+      <stop offset="0" stop-color="#4f8bff" stop-opacity="0.25"/>
+      <stop offset="1" stop-color="#4f8bff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="360" height="680" fill="#08090e"/>
+  <rect width="360" height="680" fill="url(#glowTop)"/>
+  <rect width="360" height="680" fill="url(#glowBottom)"/>
+
+  <!-- header -->
+  <rect x="16" y="16" width="38" height="38" rx="11" fill="url(#accent)"/>
+  <path d="M38 27.5A8.5 8.5 0 1 1 33 22a6.5 6.5 0 0 0 5 5.5Z" fill="none" stroke="#eef0ff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="64" y="33" fill="#e9ecf5" font-size="15" font-weight="700">CoursePilot</text>
+  <text x="64" y="47" fill="#8b93a8" font-size="10.5" font-weight="600">course autopilot · deepseek-flash</text>
+  <rect x="308" y="17" width="36" height="36" rx="10" fill="#ffffff05" stroke="#232838"/>
+  <circle cx="326" cy="33" r="4.5" fill="none" stroke="#8b93a8" stroke-width="1.6"/>
+  <circle cx="326" cy="33" r="1.6" fill="#8b93a8"/>
+
+  <!-- hero card -->
+  <rect x="16" y="68" width="328" height="150" rx="14" fill="#12141d" stroke="#232838"/>
+  <circle cx="30" cy="90" r="4" fill="#3fd68a"/>
+  <text x="42" y="94" fill="#8b93a8" font-size="12" font-weight="600">Готов к запуску</text>
+
+  <rect x="30" y="106" width="300" height="48" rx="11" fill="url(#accent)"/>
+  <path d="M117 123v15a1 1 0 0 0 1.5.9l11.7-7.5a1 1 0 0 0 0-1.7l-11.7-7.5a1 1 0 0 0-1.5.9Z" fill="#fff"/>
+  <text x="140" y="136" fill="#ffffff" font-size="14" font-weight="750">Запустить автопилот</text>
+
+  <rect x="30" y="162" width="145" height="40" rx="11" fill="#171a25" stroke="#232838"/>
+  <text x="102" y="187" fill="#e9ecf5" font-size="12.5" font-weight="700" text-anchor="middle">1 курс</text>
+  <rect x="185" y="162" width="145" height="40" rx="11" fill="#171a25" stroke="#232838"/>
+  <text x="257" y="187" fill="#e9ecf5" font-size="12.5" font-weight="700" text-anchor="middle">Авто-заполнить</text>
+
+  <!-- tiles -->
+  <rect x="16" y="232" width="156" height="48" rx="12" fill="#12141d" stroke="#232838"/>
+  <path d="M52 250a6.5 6.5 0 1 1-1.9-4.6M52 244v4.5h-4.5" fill="none" stroke="#c9d2e6" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="64" y="261" fill="#e9ecf5" font-size="12" font-weight="700">Ретрай</text>
+
+  <rect x="188" y="232" width="156" height="48" rx="12" fill="#12141d" stroke="#232838"/>
+  <text x="266" y="261" fill="#e9ecf5" font-size="12" font-weight="700" text-anchor="middle">Заполнить задание</text>
+
+  <rect x="16" y="292" width="156" height="48" rx="12" fill="#12141d" stroke="#232838"/>
+  <text x="94" y="321" fill="#e9ecf5" font-size="12" font-weight="700" text-anchor="middle">Пройти ревью</text>
+
+  <rect x="188" y="292" width="156" height="48" rx="12" fill="#12141d" stroke="#232838"/>
+  <text x="266" y="321" fill="#e9ecf5" font-size="12" font-weight="700" text-anchor="middle">Отправить</text>
+
+  <!-- accent button -->
+  <rect x="16" y="356" width="328" height="46" rx="11" fill="#7c5cff24" stroke="#7c5cff80"/>
+  <path d="M40 371v10m0 0 4-4m-4 4-4-4M32 385h16" fill="none" stroke="#cfc6ff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="56" y="383" fill="#d9d3ff" font-size="12.5" font-weight="750">Скачать HTML (текст + картинки)</text>
+
+  <!-- details -->
+  <rect x="16" y="416" width="328" height="44" rx="12" fill="#12141d" stroke="#232838"/>
+  <text x="32" y="443" fill="#8b93a8" font-size="12" font-weight="700">Дополнительно</text>
+  <path d="M312 436l4 4 4-4" fill="none" stroke="#8b93a8" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- empty answer -->
+  <rect x="16" y="476" width="328" height="92" rx="12" fill="none" stroke="#2f3548" stroke-dasharray="5 5"/>
+  <path d="M188 500a2 2 0 0 1-2 2h-9l-4 4v-16a2 2 0 0 1 2-2h11a2 2 0 0 1 2 2Z" fill="none" stroke="#8b93a8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="180" y="532" fill="#8b93a8" font-size="12" font-weight="600" text-anchor="middle">Ответ появится здесь</text>
+
+  <!-- footer hint -->
+  <text x="180" y="600" fill="#4a5166" font-size="10.5" text-anchor="middle">chrome side panel · v0.2.0</text>
+</svg>

@@ -1,0 +1,7 @@
+node_modules/
+*.log
+*.zip
+.DS_Store
+Thumbs.db
+monitor/__pycache__/
+monitor/actions.log
