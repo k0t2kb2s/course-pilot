@@ -367,7 +367,8 @@ async function askDeepSeekForAnswers(settings, page, instruction, request, count
         model: settings.model,
         instruction,
         page,
-        request: currentRequest
+        request: currentRequest,
+        bypassCache: true
       }
     });
 
@@ -752,7 +753,7 @@ async function retryPage() {
 
     const reviewPage = await extractFullText(tab.id);
     const statuses = await getQuestionStatuses(tab.id);
-
+    const retryMode = settings.retryMode === "text" ? "text" : "index";
     let storedAnswerTexts = [];
 
     if (!lastAnswers) {
@@ -762,14 +763,35 @@ async function retryPage() {
     }
 
     if (!lastAnswers) {
-      throw new Error("Сначала запусти «Авто-заполнить», чтобы сохранить прошлые ответы.");
+      // Панель перезапускали, памяти нет — читаем прошлые ответы прямо со страницы.
+      const fromPage = await getAnsweredQuiz(tab.id);
+      const hasAnswers = fromPage.some((entry) =>
+        Array.isArray(entry.text) ? entry.text.length > 0 : String(entry.text || "").trim() !== ""
+      );
+
+      if (hasAnswers) {
+        lastAnswers = fromPage.map((entry) => (retryMode === "text" ? entry.text : entry.index));
+        storedAnswerTexts = fromPage.map((entry) =>
+          Array.isArray(entry.text) ? entry.text : [String(entry.text || "")]
+        );
+      }
     }
 
-    setStatus(elements.status, "Жму «Ретрай»…");
+    if (!lastAnswers) {
+      setStatus(elements.status, "Прошлых ответов не видно — решу заново по странице с результатами.");
+    } else {
+      setStatus(elements.status, "Жму «Ретрай»…");
+    }
+
     const clicked = await clickRetry(tab.id);
 
     if (!clicked) {
-      throw new Error("Кнопка «Ретрай»/«Resume assignment» не найдена на странице.");
+      // Возможно, пользователь уже нажал Retake и тест перед нами.
+      const current = await extractPage(tab.id, exclusionPhrase).catch(() => null);
+
+      if (!(current && current.quizItemCount >= 1 && !isReviewPage(current.html))) {
+        throw new Error("Кнопка «Ретрай»/«Resume assignment» не найдена на странице.");
+      }
     }
 
     setStatus(elements.status, "Жду загрузки нового теста…");
@@ -800,10 +822,11 @@ async function retryPage() {
 
     setStatus(elements.status, "Прошу DeepSeek исправить ошибки…");
 
-    const retryMode = settings.retryMode === "text" ? "text" : "index";
-    const triedList = retryMode === "text"
-      ? lastAnswers.map((_, index) => new Set(storedAnswerTexts[index] || []))
-      : lastAnswers.map((answer) => new Set([JSON.stringify(answer)]));
+    const triedList = !lastAnswers
+      ? []
+      : retryMode === "text"
+        ? lastAnswers.map((_, index) => new Set(storedAnswerTexts[index] || []))
+        : lastAnswers.map((answer) => new Set([JSON.stringify(answer)]));
 
     const answers = await solveQuiz(settings, freshPage, lastAnswers, reviewPage, statuses, triedList, retryMode);
 
@@ -1244,15 +1267,34 @@ async function getQuestionStatuses(tabId) {
   return [];
 }
 
+async function getAnsweredQuiz(tabId) {
+  try {
+    const response = await sendToTab(tabId, { type: "get-answered-quiz" });
+    if (response?.ok && Array.isArray(response.answers)) {
+      return response.answers;
+    }
+  } catch {
+    // sendToTab уже пробовал инжектить скрипты.
+  }
+
+  return [];
+}
+
 async function solveQuiz(settings, page, lastAnswers, reviewPage, statuses, triedList, mode) {
-  if (lastAnswers && reviewPage) {
+  const looksReview = !!(reviewPage && isReviewPage(reviewPage.html || reviewPage.text || ""));
+  const hasReview = !!((statuses && statuses.length) || looksReview || lastAnswers);
+
+  if (hasReview) {
     const combinedHtml = [
-      `ПРОШЛЫЕ ОТВЕТЫ (JSON): ${JSON.stringify(lastAnswers)}`,
-      "СТРАНИЦА С РЕЗУЛЬТАТАМИ:",
-      reviewPage.text || reviewPage.html || "",
+      lastAnswers
+        ? `ПРОШЛЫЕ ОТВЕТЫ (JSON): ${JSON.stringify(lastAnswers)}`
+        : "ПРОШЛЫЕ ОТВЕТЫ: не сохранились. Определи неверные вопросы по странице с результатами ниже.",
+      looksReview ? "СТРАНИЦА С РЕЗУЛЬТАТАМИ:\n" + (reviewPage.text || reviewPage.html || "") : "",
       "НОВЫЙ ТЕСТ:",
       page.html
-    ].join("\n\n");
+    ]
+      .filter(Boolean)
+      .join("\n\n");
 
     const combinedPage = {
       title: page.title,

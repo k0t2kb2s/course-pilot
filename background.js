@@ -251,7 +251,7 @@ async function writeAnswerCache(key, answer) {
 }
 
 async function askDeepSeek(payload) {
-  const { apiKey, model, instruction, page, request, maxTokens } = payload;
+  const { apiKey, model, instruction, page, request, maxTokens, bypassCache } = payload;
   const effectiveKey = apiKey || DEFAULT_API_KEY;
 
   if (!effectiveKey) {
@@ -260,7 +260,7 @@ async function askDeepSeek(payload) {
   }
 
   const cacheKey = buildAnswerCacheKey({ model, instruction, request, page, maxTokens });
-  const cachedAnswer = await readAnswerCache(cacheKey);
+  const cachedAnswer = bypassCache ? null : await readAnswerCache(cacheKey);
 
   if (cachedAnswer) {
     await logEvent({ type: "api-cache-hit", title: page?.title });
@@ -319,7 +319,10 @@ async function askDeepSeek(payload) {
   }
 
   await logEvent({ type: "api-response", title: page?.title, answer: answer.slice(0, 2000) });
-  await writeAnswerCache(cacheKey, answer);
+
+  if (!bypassCache) {
+    await writeAnswerCache(cacheKey, answer);
+  }
 
   return answer;
 }

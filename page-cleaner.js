@@ -1101,15 +1101,79 @@
         text += " " + (next.textContent || "").toLowerCase();
       }
 
-      if (text.includes("try again") || text.includes("good effort")) {
+      const parent = group.parentElement;
+
+      if (parent && parent.querySelectorAll('[role="group"][aria-labelledby$="-legend"]').length === 1) {
+        const feedback = Array.from(parent.querySelectorAll(
+          '[class*="feedback" i], [data-testid*="feedback" i], [class*="result" i], [class*="Result" i]'
+        ));
+
+        for (const element of feedback) {
+          text += " " + (element.textContent || "").toLowerCase();
+        }
+      }
+
+      if (/try again|good effort|incorrect|not quite|you missed|неверно|неправильно/.test(text)) {
         return "wrong";
       }
 
-      if (text.includes("nice work")) {
+      if (/nice work|correct answer|you got it|\bcorrect\b|верно|правильно/.test(text)) {
         return "correct";
       }
 
       return "unknown";
+    });
+  }
+
+  // Восстанавливает прошлые ответы прямо из открытой страницы с результатами:
+  // что было выбрано в radio/checkbox/select и что вписано в поля.
+  function getAnsweredQuiz() {
+    const groups = Array.from(document.querySelectorAll('[role="group"][aria-labelledby$="-legend"]'));
+
+    return groups.map((group) => {
+      const radios = Array.from(group.querySelectorAll('input[type="radio"]'));
+      const checkboxes = Array.from(group.querySelectorAll('input[type="checkbox"]'));
+      const selects = Array.from(group.querySelectorAll("select"));
+      const texts = Array.from(group.querySelectorAll('input[type="text"], input[type="number"]'));
+      const textareas = Array.from(group.querySelectorAll("textarea"));
+
+      if (radios.length) {
+        const checked = radios.find((radio) => radio.checked);
+
+        return {
+          text: checked ? getOptionLabel(checked, null) : "",
+          index: checked ? radios.indexOf(checked) + 1 : 0
+        };
+      }
+
+      if (checkboxes.length) {
+        const picked = checkboxes
+          .map((checkbox, index) => ({ checkbox, index }))
+          .filter(({ checkbox }) => checkbox.checked);
+
+        return {
+          text: picked.map(({ checkbox }) => getOptionLabel(checkbox, null)).filter(Boolean),
+          index: picked.map(({ index }) => index + 1)
+        };
+      }
+
+      if (selects.length) {
+        const select = selects[0];
+        const real = Array.from(select.options)
+          .map((option, index) => ({ option, index }))
+          .filter(({ option, index }) => !isPlaceholderOption(option, index));
+        const chosen = real.findIndex(({ option }) => option.selected);
+
+        return {
+          text: chosen >= 0 ? (real[chosen].option.textContent || "").trim() : "",
+          index: chosen + 1
+        };
+      }
+
+      const input = texts[0] || textareas[0];
+      const value = input ? (input.value || "").trim() : "";
+
+      return { text: value, index: value };
     });
   }
 
@@ -1631,6 +1695,7 @@
     diagnoseDocument,
     parseQuizResult,
     getQuestionStatuses,
+    getAnsweredQuiz,
     extractFullText,
     clickMySubmission,
     detectAssignmentType,

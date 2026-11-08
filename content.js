@@ -129,6 +129,17 @@
       return;
     }
 
+    if (message.type === "get-answered-quiz") {
+      try {
+        const answers = globalThis.PageCleaner.getAnsweredQuiz();
+        sendResponse({ ok: true, answers });
+      } catch (error) {
+        sendResponse({ ok: false, error: error.message });
+      }
+
+      return;
+    }
+
     if (message.type === "click-my-submission") {
       try {
         const clicked = globalThis.PageCleaner.clickMySubmission();
