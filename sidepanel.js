@@ -324,9 +324,40 @@ function normalizeAnswers(parsed, types, count) {
   throw new Error(`Ожидалось ${count} ответов, получено ${parsed.length}.`);
 }
 
+function isBlankAnswer(answer) {
+  if (answer == null) {
+    return true;
+  }
+
+  if (Array.isArray(answer)) {
+    return answer.length === 0 || answer.every((entry) => isBlankAnswer(entry));
+  }
+
+  if (typeof answer === "number") {
+    return !Number.isInteger(answer) || answer <= 0;
+  }
+
+  const text = String(answer).trim();
+
+  if (!text) {
+    return true;
+  }
+
+  const number = Number(text);
+
+  return Number.isInteger(number) && number <= 0;
+}
+
+function mergeAnswers(base, extra) {
+  return base.map((answer, index) =>
+    isBlankAnswer(answer) && !isBlankAnswer(extra[index]) ? extra[index] : answer
+  );
+}
+
 async function askDeepSeekForAnswers(settings, page, instruction, request, count) {
   const types = page.quizTypes || [];
   let currentRequest = request;
+  let best = null;
 
   for (let attempt = 0; attempt < 3; attempt++) {
     const response = await chrome.runtime.sendMessage({
@@ -344,15 +375,35 @@ async function askDeepSeekForAnswers(settings, page, instruction, request, count
       throw new Error(response?.error || "Не удалось получить ответ DeepSeek.");
     }
 
+    let parsed = null;
+
     try {
-      return normalizeAnswers(parseJsonArray(response.answer), types, count);
+      parsed = normalizeAnswers(parseJsonArray(response.answer), types, count);
     } catch (error) {
-      if (attempt === 2) {
+      if (attempt === 2 && !best) {
         throw error;
       }
-
-      currentRequest = `${request}\n\nВАЖНО: ты вернул неполный или невалидный массив. Верни РОВНО ${count} элементов, по одному на каждый вопрос.`;
     }
+
+    if (parsed) {
+      best = best ? mergeAnswers(best, parsed) : parsed;
+
+      if (best.every((answer) => !isBlankAnswer(answer))) {
+        return best;
+      }
+    }
+
+    const missing = best
+      ? best.map((answer, index) => (isBlankAnswer(answer) ? index + 1 : 0)).filter(Boolean)
+      : [];
+
+    currentRequest = missing.length
+      ? `${request}\n\nВАЖНО: для вопросов ${missing.join(", ")} ответа нет. Верни РОВНО ${count} элементов, по одному на каждый вопрос, и обязательно заполни эти номера.`
+      : `${request}\n\nВАЖНО: ты вернул неполный или невалидный массив. Верни РОВНО ${count} элементов, по одному на каждый вопрос.`;
+  }
+
+  if (best) {
+    return best;
   }
 
   throw new Error("DeepSeek не вернул полный массив ответов.");
@@ -379,7 +430,7 @@ async function autoFillPage() {
       settings,
       page,
       "Решай тест. Для каждого вопроса дай ответ строго по его типу.",
-      `Ниже тест из ${page.quizItemCount} вопросов. Ответь по типу каждого вопроса:\n- [ОДИН ВАРИАНТ] → номер правильного варианта в скобках (целое число, отсчёт с 1).\n- [ВЫБЕРИ ВСЕ ВЕРНЫЕ] → массив номеров в скобках, напр. [1,3].\n- [ВПИШИ ОТВЕТ] → строка с ответом.\nВерни ТОЛЬКО JSON-массив из ${page.quizItemCount} элементов в порядке вопросов, без пояснений. Пример: [1, [1,3], "AB", 2]`,
+      `Ниже тест из ${page.quizItemCount} вопросов. Ответь по типу каждого вопроса:\n- [ОДИН ВАРИАНТ] → номер правильного варианта в скобках (целое число, отсчёт с 1).\n- [ОДИН ВАРИАНТ (выпадающий)] → тоже номер пункта в скобках.\n- [ВЫБЕРИ ВСЕ ВЕРНЫЕ] → массив номеров в скобках, напр. [1,3].\n- [ВПИШИ ОТВЕТ] → строка с ответом.\nВерни ТОЛЬКО JSON-массив из ${page.quizItemCount} элементов в порядке вопросов, без пояснений. Пример: [1, [1,3], "AB", 2]`,
       page.quizItemCount
     );
 
@@ -1132,7 +1183,7 @@ function detectShuffle(prevOptions, currOptions) {
 }
 
 function baseQuizRequest(count) {
-  return `Ниже тест из ${count} вопросов. Ответь по типу каждого вопроса:\n- [ОДИН ВАРИАНТ] → номер правильного варианта в скобках (целое число, отсчёт с 1).\n- [ВЫБЕРИ ВСЕ ВЕРНЫЕ] → массив номеров в скобках, напр. [1,3].\n- [ВПИШИ ОТВЕТ] → строка с ответом.\nВерни ТОЛЬКО JSON-массив из ${count} элементов в порядке вопросов, без пояснений. Пример: [1, [1,3], "AB", 2]`;
+  return `Ниже тест из ${count} вопросов. Ответь по типу каждого вопроса:\n- [ОДИН ВАРИАНТ] → номер правильного варианта в скобках (целое число, отсчёт с 1).\n- [ОДИН ВАРИАНТ (выпадающий)] → тоже номер пункта в скобках.\n- [ВЫБЕРИ ВСЕ ВЕРНЫЕ] → массив номеров в скобках, напр. [1,3].\n- [ВПИШИ ОТВЕТ] → строка с ответом.\nВерни ТОЛЬКО JSON-массив из ${count} элементов в порядке вопросов, без пояснений. Пример: [1, [1,3], "AB", 2]`;
 }
 
 function retryQuizRequest(count, statuses, lastAnswers, triedList, mode) {
@@ -1164,7 +1215,7 @@ function retryQuizRequest(count, statuses, lastAnswers, triedList, mode) {
         .join("\n")
     : "";
 
-  return `Ты уже отвечал на этот тест и НЕ прошёл. Твои прошлые ответы и результат указаны выше.\nСтатусы по вопросам:\n${statusLine || "неизвестны"}\n\nВерни ТОЛЬКО JSON-массив из ${count} элементов в порядке вопросов.\nФормат: [ОДИН ВАРИАНТ] → номер в скобках (отсчёт с 1), [ВЫБЕРИ ВСЕ ВЕРНЫЕ] → массив номеров в скобках, [ВПИШИ ОТВЕТ] → строка. Пример: [1, [1,3], "AB", 2]`;
+  return `Ты уже отвечал на этот тест и НЕ прошёл. Твои прошлые ответы и результат указаны выше.\nСтатусы по вопросам:\n${statusLine || "неизвестны"}\n\nВерни ТОЛЬКО JSON-массив из ${count} элементов в порядке вопросов.\nФормат: [ОДИН ВАРИАНТ] → номер в скобках (отсчёт с 1), [ОДИН ВАРИАНТ (выпадающий)] → номер пункта в скобках, [ВЫБЕРИ ВСЕ ВЕРНЫЕ] → массив номеров в скобках, [ВПИШИ ОТВЕТ] → строка. Пример: [1, [1,3], "AB", 2]`;
 }
 
 async function extractFullText(tabId) {

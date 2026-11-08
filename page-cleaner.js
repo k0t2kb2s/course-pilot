@@ -236,6 +236,16 @@
       .replace(/\b\d+\s*points?\b/gi, " ");
   }
 
+  function isPlaceholderOption(option, index) {
+    const label = (option.textContent || "").trim();
+
+    if (option.disabled || !label) {
+      return true;
+    }
+
+    return index === 0 && (!option.value || /^(choose|select|pick|выбер|--)/i.test(label));
+  }
+
   function extractStructuredQuestion(group, exclusionPattern) {
     const legendId = group.getAttribute("aria-labelledby");
     const legend = legendId ? document.getElementById(legendId) : null;
@@ -261,7 +271,9 @@
     } else if (selects.length) {
       type = "select";
       options = Array.from(selects[0].options)
-        .map((option) => cleanValue(option.textContent || "", exclusionPattern).trim())
+        .map((option, index) => ({ option, index }))
+        .filter(({ option, index }) => !isPlaceholderOption(option, index))
+        .map(({ option }) => cleanValue(option.textContent || "", exclusionPattern).trim())
         .filter(Boolean);
     } else if (texts.length || textareas.length) {
       type = "text";
@@ -435,19 +447,209 @@
     input.dispatchEvent(new Event("change", { bubbles: true }));
   }
 
-  function applyRadioAnswer(item, answer) {
-    const index = Number(answer);
+  function decodeEntities(value) {
+    return String(value == null ? "" : value)
+      .replace(/&nbsp;/gi, " ")
+      .replace(/&amp;/gi, "&")
+      .replace(/&lt;/gi, "<")
+      .replace(/&gt;/gi, ">")
+      .replace(/&quot;/gi, '"')
+      .replace(/&#0?39;/gi, "'")
+      .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)));
+  }
 
-    if (!Number.isInteger(index) || index < 1 || index > item.inputs.radios.length) {
+  function normalizeOption(value) {
+    return decodeEntities(value)
+      .toLowerCase()
+      .replace(/[\u2018\u2019]/g, "'")
+      .replace(/[\u201c\u201d]/g, '"')
+      .replace(/[\u2013\u2014]/g, "-")
+      .replace(/\s+/g, " ")
+      .replace(/[.,;:!?"'`()\[\]{}]/g, "")
+      .replace(/^\s*(?:option|вариант)\s+/i, "")
+      .trim();
+  }
+
+  function tokenScore(option, target) {
+    const left = option.split(" ").filter((word) => word.length > 1);
+    const right = target.split(" ").filter((word) => word.length > 1);
+
+    if (left.length < 2 || right.length < 2) {
+      return 0;
+    }
+
+    const leftSet = new Set(left);
+    const rightSet = new Set(right);
+    let common = 0;
+
+    for (const word of rightSet) {
+      if (leftSet.has(word)) {
+        common++;
+      }
+    }
+
+    const union = new Set([...leftSet, ...rightSet]).size;
+
+    return union ? common / union : 0;
+  }
+
+  function matchOptionIndex(options, answer) {
+    const target = normalizeOption(answer);
+
+    if (!target) {
+      return -1;
+    }
+
+    let best = -1;
+    let bestScore = 0;
+
+    for (let i = 0; i < options.length; i++) {
+      const option = normalizeOption(options[i]);
+
+      if (!option) {
+        continue;
+      }
+
+      if (option === target) {
+        return i;
+      }
+
+      const score = option.includes(target) || target.includes(option)
+        ? Math.min(option.length, target.length) / Math.max(option.length, target.length)
+        : tokenScore(option, target) * 0.9;
+
+      if (score > bestScore) {
+        bestScore = score;
+        best = i;
+      }
+    }
+
+    return bestScore >= 0.5 ? best : -1;
+  }
+
+  function coerceAnswer(value) {
+    if (value == null) {
+      return "";
+    }
+
+    if (Array.isArray(value)) {
+      return value.map((entry) => coerceAnswer(entry));
+    }
+
+    if (typeof value === "object") {
+      const inner =
+        value.answer ?? value.text ?? value.choice ?? value.value ??
+        value.option ?? value.options ?? value.index ?? value.i ?? value.label ??
+        value.correct_answer ?? value.correct ?? value.selected ?? value.content ?? value.result;
+
+      return inner == null ? "" : coerceAnswer(inner);
+    }
+
+    return value;
+  }
+
+  function cleanAnswerText(value) {
+    return decodeEntities(value)
+      .replace(/^\s*(?:answer|ответ|option|вариант)\s*[:\-–]?\s*/i, "")
+      .replace(/[*_`]/g, "")
+      .replace(/^\s*\(?(\d+)\)?\s*[.):\-–]\s+/, "")
+      .replace(/^\s*\(?([A-Za-z])\)?\s*[.):\-–]\s+/, "")
+      .replace(/\s*[\[(]\s*(?:\d+|[A-Za-z])\s*[\])]\s*$/, "")
+      .trim();
+  }
+
+  function indexFromNumber(value, inputCount) {
+    const number = Number(value);
+
+    return Number.isInteger(number) && number >= 1 && number <= inputCount ? number - 1 : -1;
+  }
+
+  function indexFromLetter(value, inputCount) {
+    const match = String(value == null ? "" : value).match(/^\s*\(?([A-Za-z])\)?\s*$/);
+
+    if (!match) {
+      return -1;
+    }
+
+    const index = match[1].toUpperCase().charCodeAt(0) - 65;
+
+    return index >= 0 && index < inputCount ? index : -1;
+  }
+
+  function resolveAnswerIndex(options, answer, inputCount) {
+    if (Array.isArray(answer)) {
+      const first = answer.find((entry) => String(entry == null ? "" : entry).trim() !== "");
+      answer = first == null ? "" : first;
+    }
+
+    if (answer == null || typeof answer === "boolean") {
+      return -1;
+    }
+
+    if (typeof answer === "number") {
+      return indexFromNumber(answer, inputCount);
+    }
+
+    const text = String(answer).trim();
+
+    if (!text) {
+      return -1;
+    }
+
+    // "3", "(3)", "3" с точкой на конце.
+    const numeric = text.match(/^\(?\s*(\d+)\s*\)?\.?$/);
+
+    if (numeric) {
+      const index = indexFromNumber(numeric[1], inputCount);
+
+      if (index >= 0) {
+        return index;
+      }
+    }
+
+    const cleaned = cleanAnswerText(text);
+
+    // Текст варианта: точное совпадение или похожий по словам.
+    let index = matchOptionIndex(options, cleaned);
+
+    if (index < 0 && cleaned !== text) {
+      index = matchOptionIndex(options, text);
+    }
+
+    if (index >= 0) {
+      return index;
+    }
+
+    // "2. Gas" уже очистился до "Gas"; остался числовой хвост.
+    const cleanedNumeric = cleaned.match(/^\(?\s*(\d+)\s*\)?\.?$/);
+
+    if (cleanedNumeric) {
+      const numberIndex = indexFromNumber(cleanedNumeric[1], inputCount);
+
+      if (numberIndex >= 0) {
+        return numberIndex;
+      }
+    }
+
+    // "C" / "C)" / "(C)" как буква варианта.
+    return indexFromLetter(cleaned, inputCount);
+  }
+
+  function applyRadioAnswer(item, answer) {
+    const options = item.options || [];
+    const index = resolveAnswerIndex(options, answer, item.inputs.radios.length);
+
+    if (index < 0 || index >= item.inputs.radios.length) {
       return false;
     }
 
-    selectRadio(item.inputs.radios[index - 1]);
+    selectRadio(item.inputs.radios[index]);
     return true;
   }
 
   function applyCheckboxAnswer(item, answer) {
     const list = Array.isArray(answer) ? answer : [answer];
+    const options = item.options || [];
 
     for (const checkbox of item.inputs.checkboxes) {
       setChecked(checkbox, false);
@@ -456,29 +658,63 @@
     let selected = 0;
 
     for (const raw of list) {
-      const index = Number(raw);
+      if (raw == null || (typeof raw === "string" && !raw.trim())) {
+        continue;
+      }
 
-      if (Number.isInteger(index) && index >= 1 && index <= item.inputs.checkboxes.length) {
-        setChecked(item.inputs.checkboxes[index - 1], true);
+      const index = resolveAnswerIndex(options, raw, item.inputs.checkboxes.length);
+
+      if (index >= 0 && index < item.inputs.checkboxes.length) {
+        setChecked(item.inputs.checkboxes[index], true);
         selected++;
+        continue;
+      }
+
+      if (typeof raw !== "string") {
+        continue;
+      }
+
+      // "A и C", "A, C", "A and C" одним элементом.
+      const parts = raw.split(/[,;|]|\s+(?:and|и)\s+/i).map((part) => part.trim()).filter(Boolean);
+
+      if (parts.length < 2) {
+        continue;
+      }
+
+      for (const part of parts) {
+        const partIndex = resolveAnswerIndex(options, part, item.inputs.checkboxes.length);
+
+        if (partIndex >= 0 && partIndex < item.inputs.checkboxes.length) {
+          setChecked(item.inputs.checkboxes[partIndex], true);
+          selected++;
+        }
       }
     }
 
-    return list.length === 0 || selected > 0;
+    return selected > 0;
   }
 
   function applyTextAnswer(item, answer) {
-    if (typeof answer !== "string" || !answer.trim()) {
+    const value = typeof answer === "number" ? String(answer) : answer;
+
+    if (typeof value !== "string" || !value.trim()) {
       return false;
     }
 
-    const input = item.inputs.texts[0] || item.inputs.textareas[0];
+    const inputs = [...(item.inputs.texts || []), ...(item.inputs.textareas || [])];
 
-    if (!input) {
+    if (!inputs.length) {
       return false;
     }
 
-    setText(input, answer.trim());
+    const parts = value.split(/\s*\|\s*|\n/).map((part) => part.trim()).filter(Boolean);
+
+    if (inputs.length > 1 && parts.length === inputs.length) {
+      inputs.forEach((input, index) => setText(input, parts[index]));
+      return true;
+    }
+
+    setText(inputs[0], value.trim());
     return true;
   }
 
@@ -489,13 +725,35 @@
       return false;
     }
 
-    const index = Number(answer);
+    const options = Array.from(select.options);
+    const placeholders = new Set(
+      options
+        .map((option, index) => {
+          const label = (option.textContent || "").trim();
 
-    if (!Number.isInteger(index) || index < 1 || index > select.options.length) {
+          if (option.disabled) {
+            return index;
+          }
+
+          return index === 0 && (!option.value || /^(choose|select|pick|выбер|--)/i.test(label)) ? index : -1;
+        })
+        .filter((index) => index >= 0)
+    );
+    const real = options
+      .map((option, index) => ({ option, index, label: (option.textContent || "").trim() }))
+      .filter((entry) => !placeholders.has(entry.index));
+
+    if (!real.length) {
       return false;
     }
 
-    select.selectedIndex = index - 1;
+    const target = resolveAnswerIndex(real.map((entry) => entry.label), answer, real.length);
+
+    if (target < 0 || target >= real.length) {
+      return false;
+    }
+
+    select.selectedIndex = real[target].index;
     select.dispatchEvent(new Event("input", { bubbles: true }));
     select.dispatchEvent(new Event("change", { bubbles: true }));
     return true;
@@ -519,12 +777,13 @@
       throw new Error("На странице не найдены вопросы теста.");
     }
 
+    const normalized = Array.isArray(answers) ? answers.map((entry) => coerceAnswer(entry)) : [];
     const applied = [];
     const skipped = [];
 
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
-      const answer = answers[i];
+      const answer = normalized[i];
       let ok = false;
 
       if (item.type === "radio") {
@@ -547,7 +806,9 @@
     const honorChecked = checkHonorCodeAgreement();
 
     if (applied.length !== items.length) {
-      throw new Error(`Отмечено ${applied.length} из ${items.length} вопросов.`);
+      throw new Error(
+        `Отмечено ${applied.length} из ${items.length} вопросов. Без ответа: ${skipped.join(", ")}.`
+      );
     }
 
     return { applied, skipped, total: items.length, honorChecked };
