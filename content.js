@@ -26,7 +26,11 @@
 
     if (message.type === "apply-quiz-answers") {
       try {
-        const result = globalThis.PageCleaner.applyQuizAnswers(message.answers || []);
+        const result = globalThis.PageCleaner.applyQuizAnswers(
+          message.answers || [],
+          message.questions || [],
+          message.types || []
+        );
         sendResponse({ ok: true, result });
       } catch (error) {
         sendResponse({ ok: false, error: error.message });

@@ -410,6 +410,74 @@ async function askDeepSeekForAnswers(settings, page, instruction, request, count
   throw new Error("DeepSeek не вернул полный массив ответов.");
 }
 
+async function sendApplyAnswers(tabId, answers, page) {
+  return chrome.tabs.sendMessage(tabId, {
+    type: "apply-quiz-answers",
+    answers,
+    questions: page?.quizQuestions || [],
+    types: page?.quizTypes || []
+  });
+}
+
+async function askForSkippedQuestions(settings, page, skippedIndexes) {
+  const types = page.quizTypes || [];
+  const numbers = skippedIndexes.map((index) => index + 1);
+  const request = [
+    `Ниже тест. Для вопросов ${numbers.join(", ")} прошлый ответ не подошёл к разметке страницы.`,
+    `Верни ТОЛЬКО JSON-массив из ${numbers.length} элементов: ответы именно для вопросов ${numbers.join(", ")}, по порядку.`,
+    `Типы: ${skippedIndexes.map((index) => `вопрос ${index + 1} — ${types[index] || "неизвестен"}`).join(", ")}.`,
+    "Формат: [ОДИН ВАРИАНТ] → номер в скобках (отсчёт с 1), [ОДИН ВАРИАНТ (выпадающий)] → номер пункта в скобках, [ВЫБЕРИ ВСЕ ВЕРНЫЕ] → массив номеров в скобках, [ВПИШИ ОТВЕТ] → строка.",
+    "Не отвечай на остальные вопросы."
+  ].join("\n");
+
+  const trimmed = { ...page, quizTypes: skippedIndexes.map((index) => types[index] || "text") };
+
+  return await askDeepSeekForAnswers(
+    settings,
+    trimmed,
+    "Решай тест. Отвечай только за указанные вопросы.",
+    request,
+    skippedIndexes.length
+  );
+}
+
+async function applyWithRepair(tabId, settings, page, answers) {
+  let current = answers;
+  let response = await sendApplyAnswers(tabId, current, page);
+
+  if (!response?.ok) {
+    throw new Error(response?.error || "Не удалось отметить ответы.");
+  }
+
+  for (let attempt = 0; attempt < 2 && response.result.skipped.length; attempt++) {
+    const skippedIndexes = response.result.skipped.map((number) => number - 1);
+    let patch = null;
+
+    try {
+      patch = await askForSkippedQuestions(settings, page, skippedIndexes);
+    } catch {
+      patch = null;
+    }
+
+    if (!Array.isArray(patch) || patch.length !== skippedIndexes.length) {
+      break;
+    }
+
+    current = current.slice();
+    skippedIndexes.forEach((questionIndex, offset) => {
+      current[questionIndex] = patch[offset];
+    });
+
+    response = await sendApplyAnswers(tabId, current, page);
+
+    if (!response?.ok) {
+      throw new Error(response?.error || "Не удалось отметить ответы.");
+    }
+  }
+
+  return { answers: current, result: response.result };
+}
+
 async function autoFillPage() {
   elements.autoFillButton.disabled = true;
   setStatus(elements.status, "Читаю тест…");
@@ -427,7 +495,7 @@ async function autoFillPage() {
 
     setStatus(elements.status, "Прошу DeepSeek выбрать ответы…");
 
-    const answers = await askDeepSeekForAnswers(
+    let answers = await askDeepSeekForAnswers(
       settings,
       page,
       "Решай тест. Для каждого вопроса дай ответ строго по его типу.",
@@ -437,16 +505,15 @@ async function autoFillPage() {
 
     setStatus(elements.status, "Отмечаю ответы на странице…");
 
-    const applyResponse = await chrome.tabs.sendMessage(tab.id, {
-      type: "apply-quiz-answers",
-      answers
-    });
+    const repaired = await applyWithRepair(tab.id, settings, page, answers);
+    answers = repaired.answers;
 
-    if (!applyResponse?.ok) {
-      throw new Error(applyResponse?.error || "Не удалось отметить ответы.");
+    const { applied, skipped, honorChecked } = repaired.result;
+
+    if (skipped.length) {
+      throw new Error(`Не удалось отметить вопросы: ${skipped.join(", ")}. Тест не отправлен.`);
     }
 
-    const { applied, skipped, honorChecked } = applyResponse.result;
     lastAnswers = answers;
 
     const optionTexts = page.quizOptions || [];
@@ -828,23 +895,24 @@ async function retryPage() {
         ? lastAnswers.map((_, index) => new Set(storedAnswerTexts[index] || []))
         : lastAnswers.map((answer) => new Set([JSON.stringify(answer)]));
 
-    const answers = await solveQuiz(settings, freshPage, lastAnswers, reviewPage, statuses, triedList, retryMode);
+    let answers = await solveQuiz(settings, freshPage, lastAnswers, reviewPage, statuses, triedList, retryMode);
 
     lastAnswers = answers;
     await chrome.storage.local.set({ [LAST_ANSWERS_KEY]: answers });
 
     setStatus(elements.status, "Отмечаю исправленные ответы…");
 
-    const applyResponse = await chrome.tabs.sendMessage(tab.id, {
-      type: "apply-quiz-answers",
-      answers
-    });
+    const repaired = await applyWithRepair(tab.id, settings, freshPage, answers);
+    answers = repaired.answers;
 
-    if (!applyResponse?.ok) {
-      throw new Error(applyResponse?.error || "Не удалось отметить ответы.");
+    const { applied, skipped, honorChecked } = repaired.result;
+
+    if (skipped.length) {
+      throw new Error(`Не удалось отметить вопросы: ${skipped.join(", ")}. Тест не отправлен.`);
     }
 
-    const { applied, skipped, honorChecked } = applyResponse.result;
+    lastAnswers = answers;
+    await chrome.storage.local.set({ [LAST_ANSWERS_KEY]: answers });
 
     setStatus(elements.status, "Нажимаю Submit…");
 
@@ -1359,11 +1427,13 @@ async function waitForQuizResult(tab, previous = {}, timeoutMs = 15000) {
   return { passed: false, failed: false, grade: null, threshold: null, signature: "", hasSubmitControls: false };
 }
 
-async function applyAndSubmit(tab, answers) {
-  const applyResponse = await sendToTab(tab.id, { type: "apply-quiz-answers", answers });
+async function applyAndSubmit(tab, answers, page, settings) {
+  const repaired = await applyWithRepair(tab.id, settings, page, answers);
 
-  if (!applyResponse?.ok) {
-    throw new Error(applyResponse?.error || "Не удалось отметить ответы.");
+  if (repaired.result.skipped.length) {
+    throw new Error(
+      `Отмечено ${repaired.result.applied.length} из ${repaired.result.total}. Без ответа: ${repaired.result.skipped.join(", ")}.`
+    );
   }
 
   const submitResponse = await sendToTab(tab.id, { type: "submit-quiz" });
@@ -1377,8 +1447,8 @@ async function applyAndSubmit(tab, answers) {
   }
 
   return {
-    applied: applyResponse.result.applied.length,
-    total: applyResponse.result.total,
+    applied: repaired.result.applied.length,
+    total: repaired.result.total,
     submitted: true,
     confirmed: !!submitResponse.result.confirmed
   };
@@ -1528,7 +1598,7 @@ async function runAutopilotOnTab(tab, settings, exclusionPhrase, courseUrl) {
         previousOptions = optionTexts;
 
         const beforeResult = await getQuizResult(tab);
-        const applied = await applyAndSubmit(tab, answers);
+        const applied = await applyAndSubmit(tab, answers, page, settings);
 
         setStatus(elements.status, `(${i + 1}/${links.length}) Жду результат…`);
         const result = await waitForQuizResult(tab, beforeResult);

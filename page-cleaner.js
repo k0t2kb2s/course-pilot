@@ -770,7 +770,83 @@
     return true;
   }
 
-  function applyQuizAnswers(answers) {
+  function questionKey(item) {
+    return normalizeOption(stripQuestionNoise(String(item.question || "")));
+  }
+
+  // Ответы привязываются к тексту вопроса, а не к позиции: страница между
+  // чтением и заполнением может перерисоваться и переставить вопросы.
+  function matchAnswerSlots(items, questions, types, answerCount) {
+    const sourceQuestions = Array.isArray(questions) ? questions : [];
+    const sourceTypes = Array.isArray(types) ? types : [];
+    const currentQuestions = items.map((item) => questionKey(item));
+    const used = new Set();
+    const slots = items.map(() => -1);
+
+    const typeMatches = (sourceIndex, item) =>
+      !sourceTypes[sourceIndex] || sourceTypes[sourceIndex] === item.type;
+
+    for (let i = 0; i < items.length; i++) {
+      if (!currentQuestions[i]) {
+        continue;
+      }
+
+      for (let j = 0; j < sourceQuestions.length; j++) {
+        if (used.has(j) || !typeMatches(j, items[i])) {
+          continue;
+        }
+
+        const key = normalizeOption(stripQuestionNoise(String(sourceQuestions[j] || "")));
+
+        if (key === currentQuestions[i]) {
+          slots[i] = j;
+          used.add(j);
+          break;
+        }
+      }
+    }
+
+    for (let i = 0; i < items.length; i++) {
+      if (slots[i] >= 0 || !currentQuestions[i]) {
+        continue;
+      }
+
+      let best = -1;
+      let bestScore = 0;
+
+      for (let j = 0; j < sourceQuestions.length; j++) {
+        if (used.has(j) || !typeMatches(j, items[i])) {
+          continue;
+        }
+
+        const key = normalizeOption(stripQuestionNoise(String(sourceQuestions[j] || "")));
+        const score = key ? tokenScore(currentQuestions[i], key) : 0;
+
+        if (score > bestScore) {
+          bestScore = score;
+          best = j;
+        }
+      }
+
+      if (best >= 0 && bestScore >= 0.6) {
+        slots[i] = best;
+        used.add(best);
+      }
+    }
+
+    for (let i = 0; i < items.length; i++) {
+      if (slots[i] >= 0 || i >= answerCount || used.has(i)) {
+        continue;
+      }
+
+      slots[i] = i;
+      used.add(i);
+    }
+
+    return slots;
+  }
+
+  function applyQuizAnswers(answers, questions, types) {
     const items = getQuestionData(document.body, null);
 
     if (!items.length) {
@@ -778,12 +854,14 @@
     }
 
     const normalized = Array.isArray(answers) ? answers.map((entry) => coerceAnswer(entry)) : [];
+    const slots = matchAnswerSlots(items, questions, types, normalized.length);
     const applied = [];
     const skipped = [];
 
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
-      const answer = normalized[i];
+      const slot = slots[i] >= 0 ? slots[i] : i;
+      const answer = normalized[slot];
       let ok = false;
 
       if (item.type === "radio") {
@@ -805,13 +883,13 @@
 
     const honorChecked = checkHonorCodeAgreement();
 
-    if (applied.length !== items.length) {
-      throw new Error(
-        `Отмечено ${applied.length} из ${items.length} вопросов. Без ответа: ${skipped.join(", ")}.`
-      );
-    }
-
-    return { applied, skipped, total: items.length, honorChecked };
+    return {
+      applied,
+      skipped,
+      total: items.length,
+      honorChecked,
+      partial: applied.length !== items.length
+    };
   }
 
   function findAnswerEditors() {
@@ -1655,6 +1733,7 @@
         wasTruncated: false,
         quizItemCount: quizItems.length,
         quizTypes: quizItems.map((item) => item.type),
+        quizQuestions: quizItems.map((item) => item.question || ""),
         quizOptions: quizItems.map((item) => item.options || []),
         isReview,
         pageKind: isReview ? "review" : "quiz",
@@ -1674,6 +1753,7 @@
       wasTruncated: writer.wasTruncated,
       quizItemCount: 0,
       quizTypes: [],
+      quizQuestions: [],
       quizOptions: [],
       isReview,
       pageKind: diagnoseDocument(),
