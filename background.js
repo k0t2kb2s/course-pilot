@@ -383,6 +383,17 @@ function scheduleApiCall(task) {
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message.type === "get-config") {
+    sendResponse({
+      ok: true,
+      provider: USING_EXPERIENTIAL ? "experiential" : "deepseek",
+      flash: USING_EXPERIENTIAL ? EXP_FLASH_MODEL : DEFAULT_MODEL,
+      pro: USING_EXPERIENTIAL ? PRO_MODEL : DEFAULT_MODEL,
+      version: chrome.runtime.getManifest().version
+    });
+    return;
+  }
+
   if (message.type !== "ask-deepseek") {
     return;
   }

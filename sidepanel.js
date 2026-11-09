@@ -8,6 +8,7 @@ const STOP_REQUEST_KEY = "autopilotStopRequested";
 const CONTROL_ACTION = new URLSearchParams(location.search).get("control");
 
 const elements = {
+  brandSub: document.querySelector(".brand-sub"),
   sendButton: document.querySelector("#sendButton"),
   autoFillButton: document.querySelector("#autoFillButton"),
   retryButton: document.querySelector("#retryButton"),
@@ -82,6 +83,16 @@ async function initialize() {
   // Сбрасываем флаг, чтобы закрытие/переоткрытие панели не блокировало запуск.
   await resetAutopilotFlag();
   const settings = await getSettings();
+
+  const config = await chrome.runtime.sendMessage({ type: "get-config" }).catch(() => null);
+
+  if (config?.ok) {
+    elements.brandSub.textContent = `${config.provider} · v${config.version}`;
+  } else {
+    elements.brandSub.textContent = "фон не обновлён";
+    setStatus(elements.status, "Перезагрузи расширение в chrome://extensions: фон ещё старый.", true);
+  }
+
   elements.apiKey.value = settings.apiKey;
   elements.model.value = settings.model;
   elements.instruction.value = settings.instruction;
