@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>CoursePilot</title>
+    <title>Page to DeepSeek</title>
     <link rel="stylesheet" href="sidepanel.css" />
   </head>
   <body>
@@ -18,8 +18,8 @@
             </svg>
           </span>
           <div class="brand-text">
-            <span class="brand-name">CoursePilot</span>
-            <span class="brand-sub">course autopilot · deepseek-flash</span>
+            <span class="brand-name">Page to DeepSeek</span>
+            <span class="brand-sub">Coursera autopilot · DeepSeek</span>
           </div>
         </div>
         <button class="icon-btn" id="settingsButton" type="button" aria-label="Настройки">
@@ -77,7 +77,7 @@
           <div class="more-body">
             <button id="previewButton" class="btn btn-soft" type="button">Предпросмотр данных</button>
             <button id="downloadLogButton" class="btn btn-soft" type="button">Скачать лог</button>
-            <button id="clearLogButton" class="btn btn-soft" type="button">Очистить лог и кэш</button>
+            <button id="clearLogButton" class="btn btn-soft" type="button">Очистить лог, кэш и историю</button>
           </div>
         </details>
 
@@ -102,7 +102,7 @@
         <p class="group-label">Подключение</p>
         <label class="field-label" for="apiKey">Ключ DeepSeek</label>
         <input id="apiKey" type="password" autocomplete="off" placeholder="sk-..." />
-        <p class="hint">Хранится только локально. Ключ нужен для работы — в исходниках его нет.</p>
+        <p class="hint">Хранится только локально. Пусто — берётся зашитый ключ.</p>
 
         <label class="field-label" for="model">Модель</label>
         <input id="model" type="text" value="deepseek-flash" />

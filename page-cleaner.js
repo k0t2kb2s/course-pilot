@@ -1215,10 +1215,15 @@
       const texts = Array.from(group.querySelectorAll('input[type="text"], input[type="number"]'));
       const textareas = Array.from(group.querySelectorAll("textarea"));
 
+      const legendId = group.getAttribute("aria-labelledby");
+      const legend = legendId ? document.getElementById(legendId) : null;
+      const question = (legend ? legend.textContent : group.textContent || "").trim();
+
       if (radios.length) {
         const checked = radios.find((radio) => radio.checked);
 
         return {
+          question,
           text: checked ? getOptionLabel(checked, null) : "",
           index: checked ? radios.indexOf(checked) + 1 : 0
         };
@@ -1230,6 +1235,7 @@
           .filter(({ checkbox }) => checkbox.checked);
 
         return {
+          question,
           text: picked.map(({ checkbox }) => getOptionLabel(checkbox, null)).filter(Boolean),
           index: picked.map(({ index }) => index + 1)
         };
@@ -1243,6 +1249,7 @@
         const chosen = real.findIndex(({ option }) => option.selected);
 
         return {
+          question,
           text: chosen >= 0 ? (real[chosen].option.textContent || "").trim() : "",
           index: chosen + 1
         };
@@ -1251,7 +1258,7 @@
       const input = texts[0] || textareas[0];
       const value = input ? (input.value || "").trim() : "";
 
-      return { text: value, index: value };
+      return { question, text: value, index: value };
     });
   }
 

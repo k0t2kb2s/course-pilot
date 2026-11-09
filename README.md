@@ -92,7 +92,7 @@ Because clicking through forty quizzes is not learning. A person should read, ar
 | **Autopilot · all tabs** | Walks every open Coursera tab, solves each assignment, submits, retries until it passes, then does a verification pass. |
 | **Autopilot · one course** | Same run, current tab only. |
 | **Auto-fill** | Solves a single quiz in place, no navigation. |
-| **Retry** | After a failed attempt it reads the review feedback, retakes the quiz, and changes only the wrong answers. |
+| **Retry** | After a failed attempt it reads the review feedback, retakes the quiz, and changes only the wrong answers. Every option that already failed is remembered per test and never repeated. |
 | **Fill assignment** | Detects the task type (quiz / rich text / file upload) and handles it. |
 | **Peer review** | Fills rubric ratings and comments, then submits each pending review. |
 | **Download HTML** | Exports a clean, self-contained page with the questions **and images**, so you can solve a hard task yourself. |
@@ -116,7 +116,7 @@ Because clicking through forty quizzes is not learning. A person should read, ar
 
 - **One tab per quiz.** Autopilot walks tabs in order, so open the week's quizzes first and let it work.
 - **Wrong options ticked?** Open the gear and switch **Исключение ответов при ретрае** between **По номеру варианта** and **По тексту ответа**. One of the two always matches the course's markup.
-- **Answers look stale?** A course updated its questions. Press **Очистить лог и кэш**, then rerun. The cache is unlimited, so it will happily serve an old answer forever otherwise.
+- **Answers look stale?** A course updated its questions. Press **Очистить лог, кэш и историю**, then rerun. The cache is unlimited, so it will happily serve an old answer forever otherwise.
 - **Math and symbolic tasks.** If the model keeps missing, use **Скачать HTML**: the export keeps formulas and images, so you can solve it in a notebook and paste the result.
 - **Quizzes with pictures.** Images are sent to the model along with the text, so diagrams and code screenshots work.
 - **Peer review needs the page open.** Navigate to *Reviews left to complete* first, then press **Выполнить ревью**.
@@ -163,7 +163,7 @@ docs/              panel and install mockups
 | **Action buttons do nothing** | Reload the extension in `chrome://extensions`, then reopen the panel. Code changes need a reload. |
 | **"Редактор не найден"** | Open *My submission* manually, then press **Заполнить задание**. |
 | **"Кнопка Submit не найдена"** | The page is not a quiz or assignment page. |
-| **Answers repeat after a course update** | **Очистить лог и кэш**, then run again. |
+| **Answers repeat after a course update** | **Очистить лог, кэш и историю**, then run again. |
 | **Panel looks broken after an update** | Hard reload the extension (`chrome://extensions` → reload icon), then reopen the panel. |
 
 ### FAQ
@@ -184,7 +184,9 @@ docs/              panel and install mockups
 
 **Is my key safe?** It sits in `chrome.storage.local`, on your machine, and goes only to `api.deepseek.com`. There is no backend to leak it.
 
-**Does it store my answers?** Locally, in the same place, so reruns are free. **Очистить лог и кэш** wipes it.
+**Does it store my answers?** Locally, in the same place, so reruns are free. **Очистить лог, кэш и историю** wipes it.
+
+**Does it learn from failed attempts?** Yes, per test. Wrong options are remembered and never offered again; correct ones are kept unchanged.
 
 **Can I run it on two accounts?** Only one profile at a time. Use separate Chrome profiles if you need both.
 
@@ -295,7 +297,7 @@ git clone https://github.com/k0t2kb2s/course-pilot.git
 | **Автопилот · все вкладки** | Проходит все открытые вкладки Coursera, решает каждое задание, отправляет, добивает ретраем до прохода и делает перепроверку. |
 | **Автопилот · один курс** | То же, но только текущая вкладка. |
 | **Авто-заполнить** | Решает один тест на месте, без переходов. |
-| **Повторить** | После провала читает фидбек, перепроходит и меняет только неверные ответы. |
+| **Повторить** | После провала читает фидбек, перепроходит и меняет только неверные ответы. Каждый уже проваленный вариант запоминается для этого теста и больше не предлагается. |
 | **Заполнить задание** | Определяет тип задания (квиз / rich-text / загрузка файла) и обрабатывает. |
 | **Выполнить ревью** | Ставит оценки по рубрике, пишет комментарии и отправляет ревью. |
 | **Скачать HTML** | Сохраняет чистую страницу с вопросами **и картинками**, чтобы решить сложное вручную. |
@@ -319,7 +321,7 @@ git clone https://github.com/k0t2kb2s/course-pilot.git
 
 - **Одна вкладка на тест.** Автопилот идёт по вкладкам по порядку: открой тесты недели и дай ему поработать.
 - **Отмечает не те варианты?** В настройках переключи **Исключение ответов при ретрае** между **По номеру варианта** и **По тексту ответа**. Один из двух режимов всегда попадает в разметку курса.
-- **Ответы устарели?** Курс обновил вопросы. Нажми **Очистить лог и кэш** и запусти снова. Кэш безлимитный, иначе старый ответ будет возвращаться вечно.
+- **Ответы устарели?** Курс обновил вопросы. Нажми **Очистить лог, кэш и историю** и запусти снова. Кэш безлимитный, иначе старый ответ будет возвращаться вечно.
 - **Математика и символы.** Если модель стабильно мажет, жми **Скачать HTML**: в экспорте остаются формулы и картинки, реши в блокноте и вставь результат.
 - **Тесты с картинками.** Изображения уходят модели вместе с текстом, так что схемы и скриншоты кода тоже работают.
 - **Ревью требует открытой страницы.** Сначала зайди в *Reviews left to complete*, потом жми **Выполнить ревью**.
@@ -366,7 +368,7 @@ docs/              мокапы панели и установки
 | **Кнопки не реагируют** | Перезагрузи расширение в `chrome://extensions` и открой панель заново. Правки кода требуют reload. |
 | **«Редактор не найден»** | Открой *My submission* вручную и нажми **Заполнить задание**. |
 | **«Кнопка Submit не найдена»** | Страница не тест и не задание. |
-| **Ответы повторяются после обновления курса** | **Очистить лог и кэш**, потом запуск. |
+| **Ответы повторяются после обновления курса** | **Очистить лог, кэш и историю**, потом запуск. |
 | **После обновления панель выглядит сломанной** | Перезагрузи расширение (`chrome://extensions` → иконка reload) и открой панель заново. |
 
 ### Вопросы
@@ -387,7 +389,9 @@ docs/              мокапы панели и установки
 
 **Ключ в безопасности?** Лежит в `chrome.storage.local`, у тебя на машине, уходит только на `api.deepseek.com`. Бэкенда, который мог бы его слить, нет.
 
-**Ответы где-то хранятся?** Локально, там же, чтобы повторные прогоны были бесплатными. **Очистить лог и кэш** всё стирает.
+**Ответы где-то хранятся?** Локально, там же, чтобы повторные прогоны были бесплатными. **Очистить лог, кэш и историю** всё стирает.
+
+**Учится на ошибках?** Да, для каждого теста отдельно. Неверные варианты запоминаются и больше не повторяются, верные остаются без изменений.
 
 **Два аккаунта одновременно?** Нет, один профиль. Нужны оба — два профиля Chrome.
 

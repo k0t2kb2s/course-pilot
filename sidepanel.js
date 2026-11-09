@@ -2,6 +2,8 @@ let lastAnswers = null;
 let stopAutopilot = false;
 const LAST_ANSWERS_KEY = "lastQuizAnswers";
 const LAST_ANSWER_TEXTS_KEY = "lastQuizAnswerTexts";
+const LAST_QUESTIONS_KEY = "lastQuizQuestions";
+const QUIZ_HISTORY_PREFIX = "qh:";
 const STOP_REQUEST_KEY = "autopilotStopRequested";
 const CONTROL_ACTION = new URLSearchParams(location.search).get("control");
 
@@ -548,7 +550,8 @@ async function autoFillPage() {
 
     await chrome.storage.local.set({
       [LAST_ANSWERS_KEY]: answers,
-      [LAST_ANSWER_TEXTS_KEY]: answerTexts
+      [LAST_ANSWER_TEXTS_KEY]: answerTexts,
+      [LAST_QUESTIONS_KEY]: page.quizQuestions || []
     });
 
     setStatus(elements.status, "Нажимаю Submit…");
@@ -843,11 +846,18 @@ async function retryPage() {
     const statuses = await getQuestionStatuses(tab.id);
     const retryMode = settings.retryMode === "text" ? "text" : "index";
     let storedAnswerTexts = [];
+    let storedQuestions = [];
+    let pageAnswerEntries = null;
 
     if (!lastAnswers) {
-      const stored = await chrome.storage.local.get([LAST_ANSWERS_KEY, LAST_ANSWER_TEXTS_KEY]);
+      const stored = await chrome.storage.local.get([
+        LAST_ANSWERS_KEY,
+        LAST_ANSWER_TEXTS_KEY,
+        LAST_QUESTIONS_KEY
+      ]);
       lastAnswers = stored[LAST_ANSWERS_KEY] || null;
       storedAnswerTexts = stored[LAST_ANSWER_TEXTS_KEY] || [];
+      storedQuestions = stored[LAST_QUESTIONS_KEY] || [];
     }
 
     if (!lastAnswers) {
@@ -858,6 +868,7 @@ async function retryPage() {
       );
 
       if (hasAnswers) {
+        pageAnswerEntries = fromPage;
         lastAnswers = fromPage.map((entry) => (retryMode === "text" ? entry.text : entry.index));
         storedAnswerTexts = fromPage.map((entry) =>
           Array.isArray(entry.text) ? entry.text : [String(entry.text || "")]
@@ -908,21 +919,86 @@ async function retryPage() {
       throw new Error("Новый тест не загрузился за 30 секунд. Нажми «Retake» вручную и повтори «Ретрай».");
     }
 
+    // История попыток по этому тесту: что уже пробовали и что оказалось неверным.
+    const history = await loadQuizHistory(freshPage);
+    const reviewQuestions = (pageAnswerEntries || []).map((entry) => entry.question || "");
+    const questionsForStatuses = reviewQuestions.some(Boolean)
+      ? reviewQuestions
+      : storedQuestions.length
+        ? storedQuestions
+        : freshPage.quizQuestions || [];
+    const previousTexts = pageAnswerEntries
+      ? pageAnswerEntries.map((entry) =>
+          (Array.isArray(entry.text) ? entry.text : [String(entry.text || "")]).filter(Boolean)
+        )
+      : storedAnswerTexts;
+
+    statuses.forEach((status, index) => {
+      const entry = historyEntry(history.data, questionsForStatuses[index]);
+
+      if (!entry) {
+        return;
+      }
+
+      entry.attempts = (entry.attempts || 0) + 1;
+
+      if (status === "correct") {
+        entry.correct = true;
+      }
+
+      if (status === "wrong") {
+        let texts = (previousTexts[index] || []).map((value) => String(value).trim()).filter(Boolean);
+
+        if (!texts.length && lastAnswers) {
+          texts = answerToHistoryTexts(lastAnswers[index], freshPage.quizOptions?.[index]);
+        }
+
+        addBanned(entry, texts);
+      }
+    });
+
+    // Сопоставляем историю с новым порядком вопросов: по тексту, не по номеру.
+    const triedList = (freshPage.quizQuestions || []).map((question) => {
+      const entry = historyEntry(history.data, question);
+      return new Set(entry ? entry.banned : []);
+    });
+    const remembered = Object.values(history.data.byQuestion).filter(
+      (entry) => entry.banned && entry.banned.length
+    ).length;
+
+    // Сохраняем сразу: даже если запрос к модели упадёт, ошибки уже запомнены.
+    await saveQuizHistory(freshPage, history.data);
+
     setStatus(
       elements.status,
-      pageHasImages(freshPage) ? "Прошу flash прочитать картинки и исправить…" : "Прошу Pro исправить ошибки…"
+      (pageHasImages(freshPage)
+        ? "Прошу flash прочитать картинки и исправить…"
+        : "Прошу Pro исправить ошибки…") + (remembered ? ` (помню ошибок: ${remembered})` : "")
     );
-
-    const triedList = !lastAnswers
-      ? []
-      : retryMode === "text"
-        ? lastAnswers.map((_, index) => new Set(storedAnswerTexts[index] || []))
-        : lastAnswers.map((answer) => new Set([JSON.stringify(answer)]));
 
     let answers = await solveQuiz(settings, freshPage, lastAnswers, reviewPage, statuses, triedList, retryMode);
 
     lastAnswers = answers;
-    await chrome.storage.local.set({ [LAST_ANSWERS_KEY]: answers });
+    const freshAnswerTexts = (freshPage.quizQuestions || []).map((_, index) =>
+      answerToHistoryTexts(answers[index], freshPage.quizOptions?.[index])
+    );
+    await chrome.storage.local.set({
+      [LAST_ANSWERS_KEY]: answers,
+      [LAST_ANSWER_TEXTS_KEY]: freshAnswerTexts,
+      [LAST_QUESTIONS_KEY]: freshPage.quizQuestions || []
+    });
+
+    // Запоминаем, что пробовали в этот раз: на следующем ретрае это уже нельзя повторять.
+    (freshPage.quizQuestions || []).forEach((question, index) => {
+      const entry = historyEntry(history.data, question);
+
+      if (!entry) {
+        return;
+      }
+
+      entry.last = answerToHistoryTexts(answers[index], freshPage.quizOptions?.[index]);
+    });
+    await saveQuizHistory(freshPage, history.data);
 
     setStatus(elements.status, "Отмечаю исправленные ответы…");
 
@@ -1313,13 +1389,11 @@ function retryQuizRequest(count, statuses, lastAnswers, triedList, mode) {
 
           if (status === "wrong") {
             const tried = triedList && triedList[index] && triedList[index].size
-              ? Array.from(triedList[index]).map((value) => (mode === "text" ? `"${value}"` : value)).join(", ")
+              ? Array.from(triedList[index]).join("; ")
               : null;
 
             if (tried) {
-              return mode === "text"
-                ? `Вопрос ${index + 1}: НЕВЕРНЫЙ. Пробовал варианты с текстом: ${tried} — они неправильные. Выбери вариант, чей ТЕКСТ не в этом списке (порядок мог поменяться)`
-                : `Вопрос ${index + 1}: НЕВЕРНЫЙ. Пробовал номера: ${tried} — они неправильные. Выбери ДРУГОЙ номер`;
+              return `Вопрос ${index + 1}: НЕВЕРНЫЙ. Уже пробовал, и это оказалось неверно: ${tried}. Не повторяй эти варианты, выбери другой.`;
             }
 
             return `Вопрос ${index + 1}: НЕВЕРНЫЙ (прошлый ответ ${prev}) — выбери другой вариант`;
@@ -1330,7 +1404,7 @@ function retryQuizRequest(count, statuses, lastAnswers, triedList, mode) {
         .join("\n")
     : "";
 
-  return `Ты уже отвечал на этот тест и НЕ прошёл. Твои прошлые ответы и результат указаны выше.\nСтатусы по вопросам:\n${statusLine || "неизвестны"}\n\nВерни ТОЛЬКО JSON-массив из ${count} элементов в порядке вопросов.\nФормат: [ОДИН ВАРИАНТ] → номер в скобках (отсчёт с 1), [ОДИН ВАРИАНТ (выпадающий)] → номер пункта в скобках, [ВЫБЕРИ ВСЕ ВЕРНЫЕ] → массив номеров в скобках, [ВПИШИ ОТВЕТ] → строка. Пример: [1, [1,3], "AB", 2]`;
+  return `Ты уже отвечал на этот тест и НЕ прошёл. Твои прошлые ответы и результат указаны выше.\nСтатусы по вопросам:\n${statusLine || "неизвестны"}\n\nПравила: не повторяй варианты, которые уже были неверными; для вопросов со статусом ВЕРНЫЙ оставь тот же ответ; учитывай обратную связь со страницы результатов.\nВерни ТОЛЬКО JSON-массив из ${count} элементов в порядке вопросов.\nФормат: [ОДИН ВАРИАНТ] → номер в скобках (отсчёт с 1), [ОДИН ВАРИАНТ (выпадающий)] → номер пункта в скобках, [ВЫБЕРИ ВСЕ ВЕРНЫЕ] → массив номеров в скобках, [ВПИШИ ОТВЕТ] → строка. Пример: [1, [1,3], "AB", 2]`;
 }
 
 async function extractFullText(tabId) {
@@ -1357,6 +1431,102 @@ async function getQuestionStatuses(tabId) {
   }
 
   return [];
+}
+
+function hashText(value) {
+  let first = 0x811c9dc5;
+  let second = 0x01000193;
+  const text = String(value || "");
+
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    first ^= code;
+    first = Math.imul(first, 0x01000193) >>> 0;
+    second = Math.imul(second ^ code, 0x85ebca6b) >>> 0;
+  }
+
+  return first.toString(16).padStart(8, "0") + second.toString(16).padStart(8, "0");
+}
+
+function normalizeHistoryText(value) {
+  return String(value == null ? "" : value)
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .replace(/[.,;:!?"'`()\[\]{}]/g, "")
+    .trim();
+}
+
+function answerToHistoryTexts(answer, options) {
+  const list = Array.isArray(answer) ? answer : [answer];
+
+  return list
+    .map((value) => {
+      if (typeof value === "number" && options && options[value - 1]) {
+        return options[value - 1];
+      }
+
+      return String(value == null ? "" : value);
+    })
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function addBanned(entry, texts) {
+  const seen = new Set((entry.banned || []).map(normalizeHistoryText));
+
+  for (const text of texts) {
+    const key = normalizeHistoryText(text);
+
+    if (!key || seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    entry.banned.push(String(text).trim());
+  }
+}
+
+function quizHistoryKey(page) {
+  const url = String(page?.url || "").split(/[?#]/)[0];
+  const questions = (page?.quizQuestions || [])
+    .map(normalizeHistoryText)
+    .filter(Boolean)
+    .sort()
+    .join("|");
+
+  return QUIZ_HISTORY_PREFIX + hashText(`${url}|${page?.title || ""}|${questions}|${page?.quizItemCount || 0}`);
+}
+
+async function loadQuizHistory(page) {
+  const key = quizHistoryKey(page);
+  const stored = await chrome.storage.local.get(key).catch(() => ({}));
+  const data = stored[key];
+
+  if (data && data.byQuestion) {
+    return { key, data };
+  }
+
+  return { key, data: { byQuestion: {}, updated: 0 } };
+}
+
+async function saveQuizHistory(page, data) {
+  const key = quizHistoryKey(page);
+  data.updated = Date.now();
+  await chrome.storage.local.set({ [key]: data }).catch(() => {});
+}
+
+function historyEntry(data, question) {
+  const key = normalizeHistoryText(question);
+
+  if (!key) {
+    return null;
+  }
+
+  if (!data.byQuestion[key]) {
+    data.byQuestion[key] = { banned: [], correct: false, attempts: 0 };
+  }
+
+  return data.byQuestion[key];
 }
 
 async function getAnsweredQuiz(tabId) {
@@ -1472,6 +1642,8 @@ async function applyAndSubmit(tab, answers, page, settings) {
   if (!submitResponse.result?.submitted) {
     throw new Error("Кнопка Submit не найдена.");
   }
+
+  await chrome.storage.local.set({ [LAST_QUESTIONS_KEY]: page?.quizQuestions || [] });
 
   return {
     applied: repaired.result.applied.length,
@@ -1956,7 +2128,9 @@ async function downloadLog() {
 
 async function clearLog() {
   const all = await chrome.storage.local.get(null);
-  const cacheKeys = Object.keys(all).filter((key) => key.startsWith("ac:") || key === "answerCache");
+  const cacheKeys = Object.keys(all).filter(
+    (key) => key.startsWith("ac:") || key.startsWith(QUIZ_HISTORY_PREFIX) || key === "answerCache"
+  );
 
   if (cacheKeys.length) {
     await chrome.storage.local.remove(cacheKeys);
