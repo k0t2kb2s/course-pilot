@@ -844,6 +844,7 @@ async function retryPage() {
 
     const reviewPage = await extractFullText(tab.id);
     const statuses = await getQuestionStatuses(tab.id);
+    const reviewEntries = await getAnsweredQuiz(tab.id);
     const retryMode = settings.retryMode === "text" ? "text" : "index";
     let storedAnswerTexts = [];
     let storedQuestions = [];
@@ -862,15 +863,14 @@ async function retryPage() {
 
     if (!lastAnswers) {
       // Панель перезапускали, памяти нет — читаем прошлые ответы прямо со страницы.
-      const fromPage = await getAnsweredQuiz(tab.id);
-      const hasAnswers = fromPage.some((entry) =>
+      const hasAnswers = reviewEntries.some((entry) =>
         Array.isArray(entry.text) ? entry.text.length > 0 : String(entry.text || "").trim() !== ""
       );
 
       if (hasAnswers) {
-        pageAnswerEntries = fromPage;
-        lastAnswers = fromPage.map((entry) => (retryMode === "text" ? entry.text : entry.index));
-        storedAnswerTexts = fromPage.map((entry) =>
+        pageAnswerEntries = reviewEntries;
+        lastAnswers = reviewEntries.map((entry) => (retryMode === "text" ? entry.text : entry.index));
+        storedAnswerTexts = reviewEntries.map((entry) =>
           Array.isArray(entry.text) ? entry.text : [String(entry.text || "")]
         );
       }
@@ -921,17 +921,16 @@ async function retryPage() {
 
     // История попыток по этому тесту: что уже пробовали и что оказалось неверным.
     const history = await loadQuizHistory(freshPage);
-    const reviewQuestions = (pageAnswerEntries || []).map((entry) => entry.question || "");
+    const reviewQuestions = reviewEntries.map((entry) => entry.question || "");
     const questionsForStatuses = reviewQuestions.some(Boolean)
       ? reviewQuestions
       : storedQuestions.length
         ? storedQuestions
         : freshPage.quizQuestions || [];
-    const previousTexts = pageAnswerEntries
-      ? pageAnswerEntries.map((entry) =>
-          (Array.isArray(entry.text) ? entry.text : [String(entry.text || "")]).filter(Boolean)
-        )
-      : storedAnswerTexts;
+    const pageTexts = reviewEntries.map((entry) =>
+      (Array.isArray(entry.text) ? entry.text : [String(entry.text || "")]).filter(Boolean)
+    );
+    const previousTexts = pageTexts.some((texts) => texts.length) ? pageTexts : storedAnswerTexts;
 
     statuses.forEach((status, index) => {
       const entry = historyEntry(history.data, questionsForStatuses[index]);
@@ -947,13 +946,19 @@ async function retryPage() {
       }
 
       if (status === "wrong") {
+        const correct = new Set(
+          (reviewEntries[index]?.correctTexts || []).map(normalizeHistoryText)
+        );
         let texts = (previousTexts[index] || []).map((value) => String(value).trim()).filter(Boolean);
 
         if (!texts.length && lastAnswers) {
           texts = answerToHistoryTexts(lastAnswers[index], freshPage.quizOptions?.[index]);
         }
 
-        addBanned(entry, texts);
+        // В checkbox страница может отметить часть выбранных как верные:
+        // такие варианты запрещать нельзя.
+        addBanned(entry, texts.filter((text) => !correct.has(normalizeHistoryText(text))));
+        addBanned(entry, reviewEntries[index]?.wrongTexts || []);
       }
     });
 
@@ -977,6 +982,44 @@ async function retryPage() {
     );
 
     let answers = await solveQuiz(settings, freshPage, lastAnswers, reviewPage, statuses, triedList, retryMode);
+
+    // Если страница результатов сама показала верные варианты (checkbox), ставим их напрямую.
+    const locked = new Set();
+
+    reviewEntries.forEach((entry) => {
+      if (!entry.correctTexts || !entry.correctTexts.length) {
+        return;
+      }
+
+      const key = normalizeHistoryText(entry.question);
+      const index = (freshPage.quizQuestions || []).findIndex(
+        (question) => normalizeHistoryText(question) === key
+      );
+
+      if (index < 0) {
+        return;
+      }
+
+      const options = freshPage.quizOptions?.[index] || [];
+      const picked = entry.correctTexts
+        .map((text) => {
+          const optionIndex = options.findIndex(
+            (option) => normalizeHistoryText(option) === normalizeHistoryText(text)
+          );
+          return optionIndex + 1;
+        })
+        .filter((number) => number > 0);
+
+      if (!picked.length) {
+        return;
+      }
+
+      answers[index] = freshPage.quizTypes?.[index] === "checkbox" ? picked : picked[0];
+      locked.add(index);
+    });
+
+    // Жёсткая гарантия: вариант, который уже был неверным, не выбираем снова.
+    enforceBans(freshPage, answers, triedList, locked);
 
     lastAnswers = answers;
     const freshAnswerTexts = (freshPage.quizQuestions || []).map((_, index) =>
@@ -1451,6 +1494,10 @@ function hashText(value) {
 function normalizeHistoryText(value) {
   return String(value == null ? "" : value)
     .toLowerCase()
+    .replace(/question\s*\d+/g, " ")
+    .replace(/\b\d+\s*\/\s*\d+\s*points?\b/g, " ")
+    .replace(/\b\d+\s*points?\b/g, " ")
+    .replace(/^\s*\d+\s*[.)]\s*/, "")
     .replace(/\s+/g, " ")
     .replace(/[.,;:!?"'`()\[\]{}]/g, "")
     .trim();
@@ -1471,6 +1518,41 @@ function answerToHistoryTexts(answer, options) {
     .filter(Boolean);
 }
 
+function enforceBans(page, answers, bannedSets, locked) {
+  const options = page.quizOptions || [];
+  const types = page.quizTypes || [];
+
+  answers.forEach((answer, index) => {
+    if (locked && locked.has(index)) {
+      return;
+    }
+
+    const banned = bannedSets[index];
+
+    if (!banned || !banned.size) {
+      return;
+    }
+
+    const bannedNorm = new Set(Array.from(banned).map(normalizeHistoryText));
+    const list = options[index] || [];
+    const chosen = answerToHistoryTexts(answer, list).map(normalizeHistoryText).filter(Boolean);
+
+    if (!chosen.length || !chosen.every((text) => bannedNorm.has(text))) {
+      return;
+    }
+
+    const free = list
+      .map((text, optionIndex) => ({ text, optionIndex }))
+      .filter(({ text }) => !bannedNorm.has(normalizeHistoryText(text)));
+
+    if (!free.length) {
+      return;
+    }
+
+    answers[index] = types[index] === "checkbox" ? [free[0].optionIndex + 1] : free[0].optionIndex + 1;
+  });
+}
+
 function addBanned(entry, texts) {
   const seen = new Set((entry.banned || []).map(normalizeHistoryText));
 
@@ -1487,14 +1569,14 @@ function addBanned(entry, texts) {
 }
 
 function quizHistoryKey(page) {
-  const url = String(page?.url || "").split(/[?#]/)[0];
+  // URL попытки меняется на каждом Retake, поэтому в ключ его не берём.
   const questions = (page?.quizQuestions || [])
     .map(normalizeHistoryText)
     .filter(Boolean)
     .sort()
     .join("|");
 
-  return QUIZ_HISTORY_PREFIX + hashText(`${url}|${page?.title || ""}|${questions}|${page?.quizItemCount || 0}`);
+  return QUIZ_HISTORY_PREFIX + hashText(`${page?.title || ""}|${questions}|${page?.quizItemCount || 0}`);
 }
 
 async function loadQuizHistory(page) {

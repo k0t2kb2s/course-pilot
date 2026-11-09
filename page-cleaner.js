@@ -231,7 +231,7 @@
 
   function stripQuestionNoise(text) {
     return text
-      .replace(/\bQuestion\s*\d+\b/gi, " ")
+      .replace(/Question\s*\d+/gi, " ")
       .replace(/\b\d+\s*\/\s*\d+\s*points?\b/gi, " ")
       .replace(/\b\d+\s*points?\b/gi, " ");
   }
@@ -771,7 +771,9 @@
   }
 
   function questionKey(item) {
-    return normalizeOption(stripQuestionNoise(String(item.question || "")));
+    return normalizeOption(
+      stripQuestionNoise(String(item.question || "")).replace(/^\s*\d+\s*[.)]\s*/, "")
+    );
   }
 
   // Ответы привязываются к тексту вопроса, а не к позиции: страница между
@@ -1168,43 +1170,101 @@
     };
   }
 
-  function getQuestionStatuses() {
-    const groups = Array.from(document.querySelectorAll('[role="group"][aria-labelledby$="-legend"]'));
+  function collectOptionFeedback(group) {
+    const result = { correct: [], wrong: [] };
 
-    return groups.map((group) => {
-      let text = (group.textContent || "").toLowerCase();
-      const next = group.nextElementSibling;
-
-      if (next) {
-        text += " " + (next.textContent || "").toLowerCase();
+    for (const feedback of group.querySelectorAll('[id$="-feedback"]')) {
+      if ((feedback.id || "").endsWith("-grade-feedback")) {
+        continue;
       }
 
-      const parent = group.parentElement;
+      const icon = feedback.querySelector('[data-testid="icon-correct"]')
+        ? "correct"
+        : feedback.querySelector('[data-testid="icon-incorrect"]')
+          ? "wrong"
+          : null;
 
-      if (parent && parent.querySelectorAll('[role="group"][aria-labelledby$="-legend"]').length === 1) {
-        const feedback = Array.from(parent.querySelectorAll(
-          '[class*="feedback" i], [data-testid*="feedback" i], [class*="result" i], [class*="Result" i]'
-        ));
+      if (!icon) {
+        continue;
+      }
 
-        for (const element of feedback) {
-          text += " " + (element.textContent || "").toLowerCase();
+      let node = feedback;
+      let label = null;
+
+      for (let depth = 0; depth < 8 && node; depth++) {
+        node = node.parentElement;
+
+        if (!node) {
+          break;
+        }
+
+        const labels = node.querySelectorAll("label");
+
+        if (labels.length === 1) {
+          label = labels[0];
+          break;
         }
       }
 
-      if (/try again|good effort|incorrect|not quite|you missed|неверно|неправильно/.test(text)) {
+      const text = label ? label.textContent.replace(/\s+/g, " ").trim() : "";
+
+      if (text) {
+        result[icon].push(text);
+      }
+    }
+
+    return result;
+  }
+
+  // Coursera показывает результат иконками в блоке *-grade-feedback,
+  // а для checkbox ещё и отмечает каждый вариант отдельно.
+  function reviewStatus(group, optionFeedback) {
+    const grade = group.querySelector('[id$="-grade-feedback"]');
+
+    if (grade) {
+      if (grade.querySelector('[data-testid="icon-incorrect"]')) {
         return "wrong";
       }
 
-      if (/nice work|correct answer|you got it|\bcorrect\b|верно|правильно/.test(text)) {
+      if (grade.querySelector('[data-testid="icon-correct"]')) {
         return "correct";
       }
+    }
 
-      return "unknown";
-    });
+    if (optionFeedback.wrong.length) {
+      return "wrong";
+    }
+
+    if (optionFeedback.correct.length) {
+      return "correct";
+    }
+
+    let text = (group.textContent || "").toLowerCase();
+    const next = group.nextElementSibling;
+
+    if (next) {
+      text += " " + (next.textContent || "").toLowerCase();
+    }
+
+    if (/try again|good effort|incorrect|not quite|you missed|неверно|неправильно/.test(text)) {
+      return "wrong";
+    }
+
+    if (/nice work|correct answer|you got it|\bcorrect\b|верно|правильно/.test(text)) {
+      return "correct";
+    }
+
+    return "unknown";
+  }
+
+  function getQuestionStatuses() {
+    const groups = Array.from(document.querySelectorAll('[role="group"][aria-labelledby$="-legend"]'));
+
+    return groups.map((group) => reviewStatus(group, collectOptionFeedback(group)));
   }
 
   // Восстанавливает прошлые ответы прямо из открытой страницы с результатами:
-  // что было выбрано в radio/checkbox/select и что вписано в поля.
+  // что было выбрано и какие варианты страница считает верными/неверными.
   function getAnsweredQuiz() {
     const groups = Array.from(document.querySelectorAll('[role="group"][aria-labelledby$="-legend"]'));
 
@@ -1218,12 +1278,19 @@
       const legendId = group.getAttribute("aria-labelledby");
       const legend = legendId ? document.getElementById(legendId) : null;
       const question = (legend ? legend.textContent : group.textContent || "").trim();
+      const optionFeedback = collectOptionFeedback(group);
+      const base = {
+        question,
+        status: reviewStatus(group, optionFeedback),
+        correctTexts: optionFeedback.correct,
+        wrongTexts: optionFeedback.wrong
+      };
 
       if (radios.length) {
         const checked = radios.find((radio) => radio.checked);
 
         return {
-          question,
+          ...base,
           text: checked ? getOptionLabel(checked, null) : "",
           index: checked ? radios.indexOf(checked) + 1 : 0
         };
@@ -1235,7 +1302,7 @@
           .filter(({ checkbox }) => checkbox.checked);
 
         return {
-          question,
+          ...base,
           text: picked.map(({ checkbox }) => getOptionLabel(checkbox, null)).filter(Boolean),
           index: picked.map(({ index }) => index + 1)
         };
@@ -1249,7 +1316,7 @@
         const chosen = real.findIndex(({ option }) => option.selected);
 
         return {
-          question,
+          ...base,
           text: chosen >= 0 ? (real[chosen].option.textContent || "").trim() : "",
           index: chosen + 1
         };
@@ -1258,7 +1325,7 @@
       const input = texts[0] || textareas[0];
       const value = input ? (input.value || "").trim() : "";
 
-      return { question, text: value, index: value };
+      return { ...base, text: value, index: value };
     });
   }
 
