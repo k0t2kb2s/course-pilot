@@ -55,7 +55,9 @@ async function getSettings() {
 
   return {
     apiKey: stored.apiKey || "",
+    proApiKey: stored.proApiKey || "",
     model: stored.model || "deepseek-flash",
+    proModel: stored.proModel || "deepseek-v4-pro",
     instruction: stored.instruction || "",
     exclusionPhrase: stored.exclusionPhrase || "",
     retryMode: stored.retryMode === "text" ? "text" : "index"
@@ -354,7 +356,7 @@ function mergeAnswers(base, extra) {
   );
 }
 
-async function askDeepSeekForAnswers(settings, page, instruction, request, count) {
+async function askDeepSeekForAnswers(settings, page, instruction, request, count, provider = "flash") {
   const types = page.quizTypes || [];
   let currentRequest = request;
   let best = null;
@@ -364,11 +366,14 @@ async function askDeepSeekForAnswers(settings, page, instruction, request, count
       type: "ask-deepseek",
       payload: {
         apiKey: settings.apiKey,
-        model: settings.model,
+        proApiKey: settings.proApiKey || "",
+        provider,
+        model: provider === "pro" ? settings.proModel || "deepseek-v4-pro" : settings.model,
         instruction,
         page,
         request: currentRequest,
-        bypassCache: true
+        bypassCache: true,
+        maxTokens: provider === "pro" ? 6000 : undefined
       }
     });
 
@@ -410,6 +415,16 @@ async function askDeepSeekForAnswers(settings, page, instruction, request, count
   throw new Error("DeepSeek не вернул полный массив ответов.");
 }
 
+async function askProForAnswers(settings, page, instruction, request, count) {
+  try {
+    return await askDeepSeekForAnswers(settings, page, instruction, request, count, "pro");
+  } catch (error) {
+    // Pro недоступен (нет ключа, сеть, лимит): ретрай всё равно должен работать.
+    await logEvent({ type: "pro-fallback", error: String(error?.message || error).slice(0, 200) });
+    return await askDeepSeekForAnswers(settings, page, instruction, request, count, "flash");
+  }
+}
+
 async function sendApplyAnswers(tabId, answers, page) {
   return chrome.tabs.sendMessage(tabId, {
     type: "apply-quiz-answers",
@@ -432,7 +447,7 @@ async function askForSkippedQuestions(settings, page, skippedIndexes) {
 
   const trimmed = { ...page, quizTypes: skippedIndexes.map((index) => types[index] || "text") };
 
-  return await askDeepSeekForAnswers(
+  return await askProForAnswers(
     settings,
     trimmed,
     "Решай тест. Отвечай только за указанные вопросы.",
@@ -1373,7 +1388,7 @@ async function solveQuiz(settings, page, lastAnswers, reviewPage, statuses, trie
       quizTypes: page.quizTypes || []
     };
 
-    return await askDeepSeekForAnswers(
+    return await askProForAnswers(
       settings,
       combinedPage,
       "Решай тест. Учитывай прошлые ответы и обратную связь, исправляй ошибки.",

@@ -4,6 +4,11 @@ const DEFAULT_MODEL = "deepseek-flash";
 // вставь свой ключ сюда. Тогда он будет запасным, если в настройках пусто.
 const DEFAULT_API_KEY = "";
 
+// Pro для ретраев: идёт через Experiential. Ключ ниже только в рабочей копии.
+const PRO_API_URL = "https://api.experientiallabs.ai/v1/chat/completions";
+const PRO_MODEL = "deepseek-v4-pro";
+const DEFAULT_PRO_API_KEY = "";
+
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {
   // Older Chrome versions without Side Panel support simply do not open it.
 });
@@ -251,16 +256,27 @@ async function writeAnswerCache(key, answer) {
 }
 
 async function askDeepSeek(payload) {
-  const { apiKey, model, instruction, page, request, maxTokens, bypassCache } = payload;
-  const effectiveKey = apiKey || DEFAULT_API_KEY;
+  const { apiKey, proApiKey, provider, model, instruction, page, request, maxTokens, bypassCache } = payload;
+  let isPro = provider === "pro";
+  let effectiveKey = isPro ? (proApiKey || DEFAULT_PRO_API_KEY) : (apiKey || DEFAULT_API_KEY);
 
-  if (!effectiveKey) {
-    await logEvent({ type: "api-error", error: "Добавь API-ключ DeepSeek." });
-    throw new Error("Добавь API-ключ DeepSeek в настройках расширения.");
+  // В публичной копии Pro-ключа нет: тихо откатываемся на обычную модель.
+  if (isPro && !effectiveKey && (apiKey || DEFAULT_API_KEY)) {
+    isPro = false;
+    effectiveKey = apiKey || DEFAULT_API_KEY;
   }
 
-  const cacheKey = buildAnswerCacheKey({ model, instruction, request, page, maxTokens });
-  const cachedAnswer = bypassCache ? null : await readAnswerCache(cacheKey);
+  if (!effectiveKey) {
+    const message = isPro ? "Добавь ключ Experiential для Pro-модели." : "Добавь API-ключ DeepSeek.";
+    await logEvent({ type: "api-error", error: message });
+    throw new Error(`${message} Он задаётся в настройках расширения.`);
+  }
+
+  const effectiveModel = isPro
+    ? (payload.proModel || PRO_MODEL)
+    : (model === "deepseek-chat" ? DEFAULT_MODEL : (model || DEFAULT_MODEL));
+  const cacheKey = buildAnswerCacheKey({ model: effectiveModel, instruction, request, page, maxTokens });
+  const cachedAnswer = bypassCache || isPro ? null : await readAnswerCache(cacheKey);
 
   if (cachedAnswer) {
     await logEvent({ type: "api-cache-hit", title: page?.title });
@@ -269,7 +285,8 @@ async function askDeepSeek(payload) {
 
   await logEvent({
     type: "api-request",
-    model,
+    model: effectiveModel,
+    provider: isPro ? "experiential" : "deepseek",
     title: page?.title,
     url: page?.url,
     instruction: String(instruction || "").slice(0, 300),
@@ -278,17 +295,18 @@ async function askDeepSeek(payload) {
     links: (page?.links || []).length
   });
 
-  const images = page.images && page.images.length ? await prepareImages(page.images) : [];
+  // Pro принимает только текст: картинки для него не отправляем.
+  const images = !isPro && page.images && page.images.length ? await prepareImages(page.images) : [];
   const links = page.links && page.links.length ? await prepareLinks(page.links) : [];
 
-  const response = await fetchWithRetry(DEEPSEEK_API_URL, {
+  const response = await fetchWithRetry(isPro ? PRO_API_URL : DEEPSEEK_API_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${effectiveKey}`
     },
     body: JSON.stringify({
-      model: model === "deepseek-chat" ? DEFAULT_MODEL : (model || DEFAULT_MODEL),
+      model: effectiveModel,
       messages: buildMessages({ instruction, page: { ...page, images, links }, request }),
       thinking: { type: "disabled" },
       max_tokens: maxTokens || 600,
@@ -304,23 +322,23 @@ async function askDeepSeek(payload) {
 
     if (code === 429) {
       await logEvent({ type: "api-error", error: "429 лимит запросов", title: page?.title });
-      throw new Error("DeepSeek: лимит запросов (429). Подожди немного и повтори.");
+      throw new Error(`${isPro ? "Pro" : "DeepSeek"}: лимит запросов (429). Подожди немного и повтори.`);
     }
 
     await logEvent({ type: "api-error", error: detail || `HTTP ${code}`, title: page?.title });
-    throw new Error(detail || `DeepSeek вернул ошибку ${code}.`);
+    throw new Error(detail || `${isPro ? "Pro" : "DeepSeek"} вернул ошибку ${code}.`);
   }
 
   const answer = data.choices?.[0]?.message?.content?.trim();
 
   if (!answer) {
     await logEvent({ type: "api-error", error: "Пустой ответ", title: page?.title });
-    throw new Error("DeepSeek не вернул текстовый ответ.");
+    throw new Error(`${isPro ? "Pro" : "DeepSeek"} не вернул текстовый ответ.`);
   }
 
   await logEvent({ type: "api-response", title: page?.title, answer: answer.slice(0, 2000) });
 
-  if (!bypassCache) {
+  if (!bypassCache && !isPro) {
     await writeAnswerCache(cacheKey, answer);
   }
 
