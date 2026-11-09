@@ -415,6 +415,10 @@ async function askDeepSeekForAnswers(settings, page, instruction, request, count
   throw new Error("DeepSeek не вернул полный массив ответов.");
 }
 
+function pageHasImages(page) {
+  return !!(page && page.images && page.images.length);
+}
+
 async function askProForAnswers(settings, page, instruction, request, count) {
   try {
     return await askDeepSeekForAnswers(settings, page, instruction, request, count, "pro");
@@ -447,7 +451,9 @@ async function askForSkippedQuestions(settings, page, skippedIndexes) {
 
   const trimmed = { ...page, quizTypes: skippedIndexes.map((index) => types[index] || "text") };
 
-  return await askProForAnswers(
+  const ask = pageHasImages(page) ? askDeepSeekForAnswers : askProForAnswers;
+
+  return await ask(
     settings,
     trimmed,
     "Решай тест. Отвечай только за указанные вопросы.",
@@ -902,7 +908,10 @@ async function retryPage() {
       throw new Error("Новый тест не загрузился за 30 секунд. Нажми «Retake» вручную и повтори «Ретрай».");
     }
 
-    setStatus(elements.status, "Прошу DeepSeek исправить ошибки…");
+    setStatus(
+      elements.status,
+      pageHasImages(freshPage) ? "Прошу flash прочитать картинки и исправить…" : "Прошу Pro исправить ошибки…"
+    );
 
     const triedList = !lastAnswers
       ? []
@@ -1388,7 +1397,10 @@ async function solveQuiz(settings, page, lastAnswers, reviewPage, statuses, trie
       quizTypes: page.quizTypes || []
     };
 
-    return await askProForAnswers(
+    // Pro не видит картинки: если они есть, ретрай идёт через flash.
+    const ask = pageHasImages(page) ? askDeepSeekForAnswers : askProForAnswers;
+
+    return await ask(
       settings,
       combinedPage,
       "Решай тест. Учитывай прошлые ответы и обратную связь, исправляй ошибки.",

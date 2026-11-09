@@ -7,7 +7,7 @@ const DEFAULT_API_KEY = "";
 // Pro для ретраев: идёт через Experiential. Ключ ниже только в рабочей копии.
 const PRO_API_URL = "https://api.experientiallabs.ai/v1/chat/completions";
 const PRO_MODEL = "deepseek-v4-pro-0813";
-const EXP_FLASH_MODEL = "deepseek-v4.1-flash-1017";
+const EXP_FLASH_MODEL = "deepseek-v4.1-flash";
 const DEFAULT_PRO_API_KEY = "";
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {
