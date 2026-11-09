@@ -57,7 +57,7 @@ async function getSettings() {
     apiKey: stored.apiKey || "",
     proApiKey: stored.proApiKey || "",
     model: stored.model || "deepseek-flash",
-    proModel: stored.proModel || "deepseek-v4-pro",
+    proModel: stored.proModel || "deepseek-v4-pro-0813",
     instruction: stored.instruction || "",
     exclusionPhrase: stored.exclusionPhrase || "",
     retryMode: stored.retryMode === "text" ? "text" : "index"
@@ -368,7 +368,7 @@ async function askDeepSeekForAnswers(settings, page, instruction, request, count
         apiKey: settings.apiKey,
         proApiKey: settings.proApiKey || "",
         provider,
-        model: provider === "pro" ? settings.proModel || "deepseek-v4-pro" : settings.model,
+        model: provider === "pro" ? settings.proModel || "deepseek-v4-pro-0813" : settings.model,
         instruction,
         page,
         request: currentRequest,
