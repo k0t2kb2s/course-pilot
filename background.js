@@ -7,6 +7,7 @@ const DEFAULT_API_KEY = "";
 // Pro для ретраев: идёт через Experiential. Ключ ниже только в рабочей копии.
 const PRO_API_URL = "https://api.experientiallabs.ai/v1/chat/completions";
 const PRO_MODEL = "deepseek-v4-pro-0813";
+const EXP_FLASH_MODEL = "deepseek-v4.1-flash-1017";
 const DEFAULT_PRO_API_KEY = "";
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {
@@ -257,24 +258,36 @@ async function writeAnswerCache(key, answer) {
 
 async function askDeepSeek(payload) {
   const { apiKey, proApiKey, provider, model, instruction, page, request, maxTokens, bypassCache } = payload;
+  const expKey = proApiKey || DEFAULT_PRO_API_KEY;
+  const viaExperiential = !!expKey;
   let isPro = provider === "pro";
-  let effectiveKey = isPro ? (proApiKey || DEFAULT_PRO_API_KEY) : (apiKey || DEFAULT_API_KEY);
 
-  // В публичной копии Pro-ключа нет: тихо откатываемся на обычную модель.
-  if (isPro && !effectiveKey && (apiKey || DEFAULT_API_KEY)) {
+  // Pro можно слать только через Experiential: без ключа работаем как обычно.
+  if (isPro && !viaExperiential) {
     isPro = false;
-    effectiveKey = apiKey || DEFAULT_API_KEY;
   }
 
+  const effectiveKey = viaExperiential ? expKey : (apiKey || DEFAULT_API_KEY);
+
   if (!effectiveKey) {
-    const message = isPro ? "Добавь ключ Experiential для Pro-модели." : "Добавь API-ключ DeepSeek.";
+    const message = viaExperiential ? "Добавь ключ Experiential." : "Добавь API-ключ DeepSeek.";
     await logEvent({ type: "api-error", error: message });
     throw new Error(`${message} Он задаётся в настройках расширения.`);
   }
 
-  const effectiveModel = isPro
-    ? (payload.proModel || PRO_MODEL)
-    : (model === "deepseek-chat" ? DEFAULT_MODEL : (model || DEFAULT_MODEL));
+  let effectiveModel;
+
+  if (viaExperiential) {
+    const requested = String(model || "");
+    const looksExperiential = /^deepseek-v4/.test(requested);
+
+    effectiveModel = isPro
+      ? (payload.proModel || PRO_MODEL)
+      : (looksExperiential ? requested : EXP_FLASH_MODEL);
+  } else {
+    effectiveModel = model === "deepseek-chat" ? DEFAULT_MODEL : (model || DEFAULT_MODEL);
+  }
+
   const cacheKey = buildAnswerCacheKey({ model: effectiveModel, instruction, request, page, maxTokens });
   const cachedAnswer = bypassCache || isPro ? null : await readAnswerCache(cacheKey);
 
@@ -286,7 +299,7 @@ async function askDeepSeek(payload) {
   await logEvent({
     type: "api-request",
     model: effectiveModel,
-    provider: isPro ? "experiential" : "deepseek",
+    provider: viaExperiential ? "experiential" : "deepseek",
     title: page?.title,
     url: page?.url,
     instruction: String(instruction || "").slice(0, 300),
@@ -299,7 +312,7 @@ async function askDeepSeek(payload) {
   const images = !isPro && page.images && page.images.length ? await prepareImages(page.images) : [];
   const links = page.links && page.links.length ? await prepareLinks(page.links) : [];
 
-  const response = await fetchWithRetry(isPro ? PRO_API_URL : DEEPSEEK_API_URL, {
+  const response = await fetchWithRetry(viaExperiential ? PRO_API_URL : DEEPSEEK_API_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
