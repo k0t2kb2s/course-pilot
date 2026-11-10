@@ -133,6 +133,17 @@
       return;
     }
 
+    if (message.type === "click-start") {
+      try {
+        const result = globalThis.PageCleaner.clickStartButton();
+        sendResponse({ ok: true, clicked: !!result?.clicked, label: result?.label || "" });
+      } catch (error) {
+        sendResponse({ ok: false, error: error.message });
+      }
+
+      return;
+    }
+
     if (message.type === "get-answered-quiz") {
       try {
         const answers = globalThis.PageCleaner.getAnsweredQuiz();

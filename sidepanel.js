@@ -458,7 +458,7 @@ async function askForSkippedQuestions(settings, page, skippedIndexes) {
     `Ниже тест. Для вопросов ${numbers.join(", ")} прошлый ответ не подошёл к разметке страницы.`,
     `Верни ТОЛЬКО JSON-массив из ${numbers.length} элементов: ответы именно для вопросов ${numbers.join(", ")}, по порядку.`,
     `Типы: ${skippedIndexes.map((index) => `вопрос ${index + 1} — ${types[index] || "неизвестен"}`).join(", ")}.`,
-    "Формат: [ОДИН ВАРИАНТ] → номер в скобках (отсчёт с 1), [ОДИН ВАРИАНТ (выпадающий)] → номер пункта в скобках, [ВЫБЕРИ ВСЕ ВЕРНЫЕ] → массив номеров в скобках, [ВПИШИ ОТВЕТ] → строка.",
+    "Формат: [ОДИН ВАРИАНТ] → номер в скобках (отсчёт с 1), [ОДИН ВАРИАНТ (выпадающий)] → номер пункта в скобках, [ВЫБЕРИ ВСЕ ВЕРНЫЕ] → массив номеров в скобках, [ВПИШИ ОТВЕТ] → строка, [ЧИСЛО] → только число без единиц.",
     "Не отвечай на остальные вопросы."
   ].join("\n");
 
@@ -521,7 +521,14 @@ async function autoFillPage() {
       getSettings(),
       getActiveTab()
     ]);
-    const page = await extractPage(tab.id, settings.exclusionPhrase || "");
+    let page = await extractPage(tab.id, settings.exclusionPhrase || "");
+    const start = await sendToTab(tab.id, { type: "click-start" }).catch(() => null);
+
+    if (start?.clicked) {
+      // Обложка задания: нажали Resume/Start, ждём, пока форму покажут.
+      await sleep(1500);
+      page = await extractPage(tab.id, settings.exclusionPhrase || "");
+    }
 
     if (!page.quizItemCount) {
       throw new Error("На странице не найден тест.");
@@ -533,7 +540,7 @@ async function autoFillPage() {
       settings,
       page,
       "Решай тест. Для каждого вопроса дай ответ строго по его типу.",
-      `Ниже тест из ${page.quizItemCount} вопросов. Ответь по типу каждого вопроса:\n- [ОДИН ВАРИАНТ] → номер правильного варианта в скобках (целое число, отсчёт с 1).\n- [ОДИН ВАРИАНТ (выпадающий)] → тоже номер пункта в скобках.\n- [ВЫБЕРИ ВСЕ ВЕРНЫЕ] → массив номеров в скобках, напр. [1,3].\n- [ВПИШИ ОТВЕТ] → строка с ответом.\nВерни ТОЛЬКО JSON-массив из ${page.quizItemCount} элементов в порядке вопросов, без пояснений. Пример: [1, [1,3], "AB", 2]`,
+      `Ниже тест из ${page.quizItemCount} вопросов. Ответь по типу каждого вопроса:\n- [ОДИН ВАРИАНТ] → номер правильного варианта в скобках (целое число, отсчёт с 1).\n- [ОДИН ВАРИАНТ (выпадающий)] → тоже номер пункта в скобках.\n- [ВЫБЕРИ ВСЕ ВЕРНЫЕ] → массив номеров в скобках, напр. [1,3].\n- [ВПИШИ ОТВЕТ] → строка с ответом.\n- [ЧИСЛО] → только число, без единиц и текста (десятичная точка).\nВерни ТОЛЬКО JSON-массив из ${page.quizItemCount} элементов в порядке вопросов, без пояснений. Пример: [1, [1,3], "AB", 2]`,
       page.quizItemCount
     );
 
@@ -1303,6 +1310,7 @@ async function waitForQuiz(tabId, exclusionPhrase, expectedUrl, timeoutMs = 4000
   const deadline = startedAt + timeoutMs;
   const attemptUrl = `${normalizeTabUrl(expectedUrl)}/attempt`;
   let directAttemptTried = false;
+  let startTried = false;
   let reviewSince = 0;
   let lastRetryAt = 0;
   let lastPage = null;
@@ -1324,6 +1332,19 @@ async function waitForQuiz(tabId, exclusionPhrase, expectedUrl, timeoutMs = 4000
       const page = await extractPage(tabId, exclusionPhrase);
       lastPage = page;
       const onAttempt = /\/attempt\/?$/.test(new URL(tab.url).pathname);
+
+      if (!startTried && !page.isReview && page.quizItemCount >= 1) {
+        const start = await sendToTab(tabId, { type: "click-start" }).catch(() => null);
+
+        if (start?.clicked) {
+          startTried = true;
+          await logEvent({ type: "start-click", url: expectedUrl, label: String(start.label || "").slice(0, 120) });
+          await sleep(1500);
+          continue;
+        }
+
+        startTried = true;
+      }
 
       if (page.isReview || page.quizItemCount === 0) {
         if (!directAttemptTried && !onAttempt) {
@@ -1428,7 +1449,7 @@ function detectShuffle(prevOptions, currOptions) {
 }
 
 function baseQuizRequest(count) {
-  return `Ниже тест из ${count} вопросов. Ответь по типу каждого вопроса:\n- [ОДИН ВАРИАНТ] → номер правильного варианта в скобках (целое число, отсчёт с 1).\n- [ОДИН ВАРИАНТ (выпадающий)] → тоже номер пункта в скобках.\n- [ВЫБЕРИ ВСЕ ВЕРНЫЕ] → массив номеров в скобках, напр. [1,3].\n- [ВПИШИ ОТВЕТ] → строка с ответом.\nВерни ТОЛЬКО JSON-массив из ${count} элементов в порядке вопросов, без пояснений. Пример: [1, [1,3], "AB", 2]`;
+  return `Ниже тест из ${count} вопросов. Ответь по типу каждого вопроса:\n- [ОДИН ВАРИАНТ] → номер правильного варианта в скобках (целое число, отсчёт с 1).\n- [ОДИН ВАРИАНТ (выпадающий)] → тоже номер пункта в скобках.\n- [ВЫБЕРИ ВСЕ ВЕРНЫЕ] → массив номеров в скобках, напр. [1,3].\n- [ВПИШИ ОТВЕТ] → строка с ответом.\n- [ЧИСЛО] → только число, без единиц и текста (десятичная точка).\nВерни ТОЛЬКО JSON-массив из ${count} элементов в порядке вопросов, без пояснений. Пример: [1, [1,3], "AB", 2]`;
 }
 
 function retryQuizRequest(count, statuses, lastAnswers, triedList, mode) {
@@ -1458,7 +1479,7 @@ function retryQuizRequest(count, statuses, lastAnswers, triedList, mode) {
         .join("\n")
     : "";
 
-  return `Ты уже отвечал на этот тест и НЕ прошёл. Твои прошлые ответы и результат указаны выше.\nСтатусы по вопросам:\n${statusLine || "неизвестны"}\n\nПравила: не повторяй варианты, которые уже были неверными; для вопросов со статусом ВЕРНЫЙ оставь тот же ответ; учитывай обратную связь со страницы результатов.\nВерни ТОЛЬКО JSON-массив из ${count} элементов в порядке вопросов.\nФормат: [ОДИН ВАРИАНТ] → номер в скобках (отсчёт с 1), [ОДИН ВАРИАНТ (выпадающий)] → номер пункта в скобках, [ВЫБЕРИ ВСЕ ВЕРНЫЕ] → массив номеров в скобках, [ВПИШИ ОТВЕТ] → строка. Пример: [1, [1,3], "AB", 2]`;
+  return `Ты уже отвечал на этот тест и НЕ прошёл. Твои прошлые ответы и результат указаны выше.\nСтатусы по вопросам:\n${statusLine || "неизвестны"}\n\nПравила: не повторяй варианты, которые уже были неверными; для вопросов со статусом ВЕРНЫЙ оставь тот же ответ; учитывай обратную связь со страницы результатов.\nВерни ТОЛЬКО JSON-массив из ${count} элементов в порядке вопросов.\nФормат: [ОДИН ВАРИАНТ] → номер в скобках (отсчёт с 1), [ОДИН ВАРИАНТ (выпадающий)] → номер пункта в скобках, [ВЫБЕРИ ВСЕ ВЕРНЫЕ] → массив номеров в скобках, [ВПИШИ ОТВЕТ] → строка, [ЧИСЛО] → только число без единиц. Пример: [1, [1,3], "AB", 2]`;
 }
 
 async function extractFullText(tabId) {

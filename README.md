@@ -96,6 +96,7 @@ Because clicking through forty quizzes is not learning. A person should read, ar
 | **Fill assignment** | Detects the task type (quiz / rich text / file upload) and handles it. |
 | **Peer review** | Fills rubric ratings and comments, then submits each pending review. |
 | **Download HTML** | Exports a clean, self-contained page with the questions **and images**, so you can solve a hard task yourself. |
+| **Number fields** | Numeric answers are entered as plain numbers, units stripped, formulas rejected instead of guessing. |
 | **Answer cache** | Identical requests come from a local cache. No repeat API calls, no tokens. No size cap. |
 | **Logs** | Every action and API call is logged locally; export the log in one click. |
 
@@ -301,6 +302,7 @@ git clone https://github.com/k0t2kb2s/course-pilot.git
 | **Заполнить задание** | Определяет тип задания (квиз / rich-text / загрузка файла) и обрабатывает. |
 | **Выполнить ревью** | Ставит оценки по рубрике, пишет комментарии и отправляет ревью. |
 | **Скачать HTML** | Сохраняет чистую страницу с вопросами **и картинками**, чтобы решить сложное вручную. |
+| **Числовые поля** | Числовые ответы вписываются числом, единицы отбрасываются, формулы не превращаются в угадайку. |
 | **Кэш ответов** | Одинаковые запросы берутся из локального кэша: без повторных вызовов API и токенов. Без лимита размера. |
 | **Логи** | Каждое действие и вызов API пишутся локально; лог выгружается одной кнопкой. |
 

@@ -252,7 +252,8 @@
 
     const radios = Array.from(group.querySelectorAll('input[type="radio"]'));
     const checkboxes = Array.from(group.querySelectorAll('input[type="checkbox"]'));
-    const texts = Array.from(group.querySelectorAll('input[type="text"]'));
+    const texts = Array.from(group.querySelectorAll('input[type="text"], input:not([type])'));
+    const numbers = Array.from(group.querySelectorAll('input[type="number"]'));
     const textareas = Array.from(group.querySelectorAll("textarea"));
     const selects = Array.from(group.querySelectorAll("select"));
 
@@ -275,13 +276,15 @@
         .filter(({ option, index }) => !isPlaceholderOption(option, index))
         .map(({ option }) => cleanValue(option.textContent || "", exclusionPattern).trim())
         .filter(Boolean);
+    } else if (numbers.length && !texts.length && !textareas.length) {
+      type = "numeric";
     } else if (texts.length || textareas.length) {
       type = "text";
     } else {
       return null;
     }
 
-    if (type !== "text" && !options.length) {
+    if (type !== "text" && type !== "numeric" && !options.length) {
       return null;
     }
 
@@ -327,7 +330,7 @@
         .trim();
     }
 
-    return { type, question, options, optionImages, images, links, feedback, inputs: { radios, checkboxes, texts, textareas, selects } };
+    return { type, question, options, optionImages, images, links, feedback, inputs: { radios, checkboxes, texts, numbers, textareas, selects } };
   }
 
   function getQuestionData(root, exclusionPattern) {
@@ -356,7 +359,7 @@
       }
 
       const question = extractQuestionText(radios, options, exclusionPattern);
-      legacyItems.push({ type: "radio", question, options, optionImages: [], images: [], links: [], feedback: "", inputs: { radios, checkboxes: [], texts: [], textareas: [], selects: [] } });
+      legacyItems.push({ type: "radio", question, options, optionImages: [], images: [], links: [], feedback: "", inputs: { radios, checkboxes: [], texts: [], numbers: [], textareas: [], selects: [] } });
     }
 
     return legacyItems.length >= 2 ? legacyItems : [];
@@ -371,8 +374,10 @@
     const typeLabel = {
       radio: "ОДИН ВАРИАНТ",
       checkbox: "ВЫБЕРИ ВСЕ ВЕРНЫЕ",
+      numeric: "ЧИСЛО",
       select: "ОДИН ВАРИАНТ (выпадающий)",
-      text: "ВПИШИ ОТВЕТ"
+      text: "ВПИШИ ОТВЕТ",
+      numeric: "ЧИСЛО"
     };
 
     return items
@@ -406,22 +411,25 @@
       .join("\n\n");
   }
 
+  // Кликаем ровно один раз: React-компоненты Coursera сами обновляют состояние
+  // по onChange, двойной клик по label приводил к «Oops, something went wrong».
   function selectRadio(radio) {
-    const label = (radio.labels && radio.labels.length ? radio.labels[0] : null) || radio.closest("label");
+    if (!radio || radio.disabled || radio.checked) {
+      return;
+    }
+
+    if (typeof radio.click === "function") {
+      radio.click();
+      return;
+    }
 
     radio.checked = true;
     radio.dispatchEvent(new Event("input", { bubbles: true }));
     radio.dispatchEvent(new Event("change", { bubbles: true }));
-
-    if (label) {
-      label.click();
-    } else if (typeof radio.click === "function") {
-      radio.click();
-    }
   }
 
   function setChecked(input, checked) {
-    if (input.checked === checked) {
+    if (!input || input.disabled || input.checked === checked) {
       return;
     }
 
@@ -433,18 +441,54 @@
     }
   }
 
+  function sanitizeNumericAnswer(value) {
+    let text = String(value == null ? "" : value)
+      .replace(/\u00A0/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    // "1,000" — тысячи, "3,14" — десятичная дробь.
+    if (/^[-+]?\d{1,3}(,\d{3})+(\.\d+)?$/.test(text)) {
+      text = text.replace(/,/g, "");
+    } else {
+      text = text.replace(/,/g, ".");
+    }
+
+    // Только число, возможно с единицами: "503.29 kHz", "1e-3", "-2.5".
+    // Формулы ("1/(2*pi*sqrt(...))") не превращаем в первое попавшееся число.
+    const match = text.match(/^[-+]?\d+(?:\.\d+)?(?:e[-+]?\d+)?(?:\s*[a-zA-Zа-яА-Я%°]+)?$/i);
+
+    if (!match) {
+      return "";
+    }
+
+    return match[0].replace(/\s*[a-zA-Zа-яА-Я%°]+$/, "");
+  }
+
   function setText(input, value) {
+    if (!input || input.disabled || input.readOnly) {
+      return false;
+    }
+
+    const isNumber = input.type === "number";
+    const clean = isNumber ? sanitizeNumericAnswer(value) : String(value == null ? "" : value);
+
+    if (isNumber && !clean) {
+      return false;
+    }
+
     const prototype = input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
     const setter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
 
     if (setter) {
-      setter.call(input, value);
+      setter.call(input, clean);
     } else {
-      input.value = value;
+      input.value = clean;
     }
 
     input.dispatchEvent(new Event("input", { bubbles: true }));
     input.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
   }
 
   function decodeEntities(value) {
@@ -701,7 +745,11 @@
       return false;
     }
 
-    const inputs = [...(item.inputs.texts || []), ...(item.inputs.textareas || [])];
+    const inputs = [
+      ...(item.inputs.texts || []),
+      ...(item.inputs.textareas || []),
+      ...(item.inputs.numbers || [])
+    ];
 
     if (!inputs.length) {
       return false;
@@ -710,12 +758,16 @@
     const parts = value.split(/\s*\|\s*|\n/).map((part) => part.trim()).filter(Boolean);
 
     if (inputs.length > 1 && parts.length === inputs.length) {
-      inputs.forEach((input, index) => setText(input, parts[index]));
-      return true;
+      let filled = 0;
+      inputs.forEach((input, index) => {
+        if (setText(input, parts[index])) {
+          filled++;
+        }
+      });
+      return filled > 0;
     }
 
-    setText(inputs[0], value.trim());
-    return true;
+    return setText(inputs[0], value.trim());
   }
 
   function applySelectAnswer(item, answer) {
@@ -849,6 +901,8 @@
   }
 
   function applyQuizAnswers(answers, questions, types) {
+    // Сначала отмечаем согласие: оно может разблокировать поля и перерисовать форму.
+    const honorChecked = checkHonorCodeAgreement();
     const items = getQuestionData(document.body, null);
 
     if (!items.length) {
@@ -872,7 +926,7 @@
         ok = applyCheckboxAnswer(item, answer);
       } else if (item.type === "select") {
         ok = applySelectAnswer(item, answer);
-      } else if (item.type === "text") {
+      } else if (item.type === "text" || item.type === "numeric") {
         ok = applyTextAnswer(item, answer);
       }
 
@@ -882,8 +936,6 @@
         skipped.push(i + 1);
       }
     }
-
-    const honorChecked = checkHonorCodeAgreement();
 
     return {
       applied,
@@ -1645,13 +1697,38 @@
     return false;
   }
 
+  // Кнопка на обложке задания: "Resume assignment" / "Start assignment".
+  function clickStartButton() {
+    const button = Array.from(document.querySelectorAll("button, [role=\"button\"]")).find((element) => {
+      if (!isActionable(element)) {
+        return false;
+      }
+
+      const text = (element.textContent || "").toLowerCase();
+      const testId = element.getAttribute("data-testid") || "";
+
+      if (testId === "CoverPageActionButton") {
+        return !/view|review/i.test(text);
+      }
+
+      return /^(resume|start|continue)\s+(assignment|quiz)$/.test(text.trim());
+    });
+
+    if (!button) {
+      return { clicked: false, label: "" };
+    }
+
+    button.click();
+    return { clicked: true, label: (button.textContent || "").trim() };
+  }
+
   function clickRetryButton() {
     const candidates = Array.from(document.querySelectorAll('button, a, [role="button"]'));
 
     // Модалка "Start attempt" (Continue) — встречается при старте попытки и ретрае.
     const startAttempt = candidates.find(
       (element) =>
-        element.getAttribute("data-testid") === "StartAttemptModal__primary-button" && isElementVisible(element)
+        element.getAttribute("data-testid") === "StartAttemptModal__primary-button" && isActionable(element)
     );
 
     if (startAttempt) {
@@ -1663,7 +1740,7 @@
       const text = (element.textContent || "").toLowerCase();
       return (
         element.getAttribute("data-testid") === "CoverPageActionButton" &&
-        isElementVisible(element) &&
+        isActionable(element) &&
         /resume|retry|try again|start/i.test(text)
       );
     });
@@ -1676,7 +1753,7 @@
     const retry = candidates.find((element) => {
       const text = (element.textContent || "").toLowerCase();
       return (
-        isElementVisible(element) &&
+        isActionable(element) &&
         (
           text.includes("resume assignment") ||
           text.includes("retake") ||
@@ -1706,10 +1783,17 @@
     return { clicked: false, label: "" };
   }
 
+  function isActionable(element) {
+    return !!element &&
+      isElementVisible(element) &&
+      !element.disabled &&
+      element.getAttribute("aria-disabled") !== "true";
+  }
+
   function findSubmitButtons() {
     return Array.from(document.querySelectorAll("button")).filter((button) => {
       const label = `${button.textContent || ""} ${button.getAttribute("aria-label") || ""}`.toLowerCase();
-      return isElementVisible(button) && label.includes("submit");
+      return isActionable(button) && label.includes("submit");
     });
   }
 
@@ -1849,6 +1933,7 @@
     diagnoseDocument,
     parseQuizResult,
     getQuestionStatuses,
+    clickStartButton,
     getAnsweredQuiz,
     extractFullText,
     clickMySubmission,
