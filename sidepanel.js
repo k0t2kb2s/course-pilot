@@ -516,7 +516,7 @@ async function askForSkippedQuestions(settings, page, skippedIndexes) {
   const numbers = skippedIndexes.map((index) => index + 1);
   const request = [
     `Ниже тест. Для вопросов ${numbers.join(", ")} прошлый ответ не подошёл к разметке страницы.`,
-    `Верни ТОЛЬКО JSON-объект с ключами "1".."${numbers.length}": значение "1" — ответ для вопроса ${numbers[0]}, "2" — для ${numbers[1] || numbers[0]}, и так далее.`,
+    `Верни ТОЛЬКО JSON-объект с ключами "1".."${numbers.length}": ${numbers.map((number, index) => `"${index + 1}" — вопрос ${number}`).join(", ")}.`,
     `Типы: ${skippedIndexes.map((index) => `вопрос ${index + 1} — ${types[index] || "неизвестен"}`).join(", ")}.`,
     "Формат: [ОДИН ВАРИАНТ] → номер в скобках (отсчёт с 1), [ОДИН ВАРИАНТ (выпадающий)] → номер пункта в скобках, [ВЫБЕРИ ВСЕ ВЕРНЫЕ] → массив номеров в скобках, [ВПИШИ ОТВЕТ] → строка, [ЧИСЛО] → только число без единиц.",
     "Не отвечай на остальные вопросы."
