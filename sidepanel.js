@@ -277,20 +277,58 @@ async function downloadCleanPage() {
   }
 }
 
-function parseJsonArray(answer) {
-  const start = answer.indexOf("[");
+function parseJsonAnswer(answer) {
+  const text = String(answer || "");
+  const arrayStart = text.indexOf("[");
+  const objectStart = text.indexOf("{");
 
-  if (start === -1) {
-    throw new Error("DeepSeek не вернул JSON-массив.");
+  if (arrayStart === -1 && objectStart === -1) {
+    throw new Error("Модель не вернула JSON.");
+  }
+
+  let start;
+  let openChar;
+  let closeChar;
+
+  if (arrayStart === -1) {
+    start = objectStart;
+    openChar = "{";
+    closeChar = "}";
+  } else if (objectStart === -1 || arrayStart < objectStart) {
+    start = arrayStart;
+    openChar = "[";
+    closeChar = "]";
+  } else {
+    start = objectStart;
+    openChar = "{";
+    closeChar = "}";
   }
 
   let depth = 0;
   let end = -1;
+  let inString = false;
+  let escaped = false;
 
-  for (let i = start; i < answer.length; i++) {
-    if (answer[i] === "[") {
+  for (let i = start; i < text.length; i++) {
+    const char = text[i];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+
+      continue;
+    }
+
+    if (char === '"') {
+      inString = true;
+    } else if (char === openChar) {
       depth++;
-    } else if (answer[i] === "]") {
+    } else if (char === closeChar) {
       depth--;
 
       if (depth === 0) {
@@ -301,25 +339,38 @@ function parseJsonArray(answer) {
   }
 
   if (end === -1) {
-    throw new Error("Не удалось разобрать JSON-массив.");
+    throw new Error("Не удалось разобрать JSON.");
   }
-
-  let parsed;
 
   try {
-    parsed = JSON.parse(answer.slice(start, end + 1));
+    return JSON.parse(text.slice(start, end + 1));
   } catch {
-    throw new Error("DeepSeek вернул невалидный JSON.");
+    throw new Error("Модель вернула невалидный JSON.");
   }
-
-  if (!Array.isArray(parsed)) {
-    throw new Error("DeepSeek вернул не массив.");
-  }
-
-  return parsed;
 }
 
 function normalizeAnswers(parsed, types, count) {
+  if (parsed && !Array.isArray(parsed) && typeof parsed === "object") {
+    const values = [];
+
+    for (let index = 1; index <= count; index++) {
+      values.push(parsed[String(index)] ?? parsed[index] ?? parsed[`q${index}`] ?? parsed[`question${index}`]);
+    }
+
+    parsed = values.some((value) => value !== undefined)
+      ? values.map((value) => (value === undefined ? "" : value))
+      : Object.values(parsed);
+  }
+
+  if (!Array.isArray(parsed)) {
+    throw new Error("Модель вернула не JSON-объект и не массив.");
+  }
+
+  // Лишние пустые хвосты не считаем ошибкой.
+  while (parsed.length > count && isBlankAnswer(parsed[parsed.length - 1])) {
+    parsed.pop();
+  }
+
   if (parsed.length === count) {
     return parsed;
   }
@@ -334,6 +385,15 @@ function normalizeAnswers(parsed, types, count) {
     if (type === "radio" && parsed.length === 1 && Array.isArray(parsed[0])) {
       return [parsed[0][0] ?? 0];
     }
+  }
+
+  const allCheckbox = types.length === count && types.every((type) => type === "checkbox");
+
+  if (allCheckbox && parsed.length !== count && parsed.every((value) => Number.isInteger(Number(value)))) {
+    throw new Error(
+      `Ты вернул плоский список ${JSON.stringify(parsed)} вместо ${count} ответов. ` +
+      "Нужен JSON-объект: {\"1\": [номера], \"2\": [номера]}."
+    );
   }
 
   throw new Error(`Ожидалось ${count} ответов, получено ${parsed.length}.`);
@@ -397,7 +457,7 @@ async function askDeepSeekForAnswers(settings, page, instruction, request, count
     let parsed = null;
 
     try {
-      parsed = normalizeAnswers(parseJsonArray(response.answer), types, count);
+      parsed = normalizeAnswers(parseJsonAnswer(response.answer), types, count);
     } catch (error) {
       if (attempt === 2 && !best) {
         throw error;
@@ -417,8 +477,8 @@ async function askDeepSeekForAnswers(settings, page, instruction, request, count
       : [];
 
     currentRequest = missing.length
-      ? `${request}\n\nВАЖНО: для вопросов ${missing.join(", ")} ответа нет. Верни РОВНО ${count} элементов, по одному на каждый вопрос, и обязательно заполни эти номера.`
-      : `${request}\n\nВАЖНО: ты вернул неполный или невалидный массив. Верни РОВНО ${count} элементов, по одному на каждый вопрос.`;
+      ? `${request}\n\nВАЖНО: для вопросов ${missing.join(", ")} ответа нет. Верни JSON-объект ровно с ключами "1".."${count}" и заполни эти номера.`
+      : `${request}\n\nВАЖНО: верни JSON-объект ровно с ключами "1".."${count}" (например {"1": 2, "2": [1,3]}), без пояснений.`;
   }
 
   if (best) {
@@ -456,7 +516,7 @@ async function askForSkippedQuestions(settings, page, skippedIndexes) {
   const numbers = skippedIndexes.map((index) => index + 1);
   const request = [
     `Ниже тест. Для вопросов ${numbers.join(", ")} прошлый ответ не подошёл к разметке страницы.`,
-    `Верни ТОЛЬКО JSON-массив из ${numbers.length} элементов: ответы именно для вопросов ${numbers.join(", ")}, по порядку.`,
+    `Верни ТОЛЬКО JSON-объект с ключами "1".."${numbers.length}": значение "1" — ответ для вопроса ${numbers[0]}, "2" — для ${numbers[1] || numbers[0]}, и так далее.`,
     `Типы: ${skippedIndexes.map((index) => `вопрос ${index + 1} — ${types[index] || "неизвестен"}`).join(", ")}.`,
     "Формат: [ОДИН ВАРИАНТ] → номер в скобках (отсчёт с 1), [ОДИН ВАРИАНТ (выпадающий)] → номер пункта в скобках, [ВЫБЕРИ ВСЕ ВЕРНЫЕ] → массив номеров в скобках, [ВПИШИ ОТВЕТ] → строка, [ЧИСЛО] → только число без единиц.",
     "Не отвечай на остальные вопросы."
@@ -540,7 +600,7 @@ async function autoFillPage() {
       settings,
       page,
       "Решай тест. Для каждого вопроса дай ответ строго по его типу.",
-      `Ниже тест из ${page.quizItemCount} вопросов. Ответь по типу каждого вопроса:\n- [ОДИН ВАРИАНТ] → номер правильного варианта в скобках (целое число, отсчёт с 1).\n- [ОДИН ВАРИАНТ (выпадающий)] → тоже номер пункта в скобках.\n- [ВЫБЕРИ ВСЕ ВЕРНЫЕ] → массив номеров в скобках, напр. [1,3].\n- [ВПИШИ ОТВЕТ] → строка с ответом.\n- [ЧИСЛО] → только число, без единиц и текста (десятичная точка).\nВерни ТОЛЬКО JSON-массив из ${page.quizItemCount} элементов в порядке вопросов, без пояснений. Пример: [1, [1,3], "AB", 2]`,
+      `Ниже тест из ${page.quizItemCount} вопросов. Ответь по типу каждого вопроса:\n- [ОДИН ВАРИАНТ] → номер правильного варианта в скобках (целое число, отсчёт с 1).\n- [ОДИН ВАРИАНТ (выпадающий)] → тоже номер пункта в скобках.\n- [ВЫБЕРИ ВСЕ ВЕРНЫЕ] → массив номеров в скобках, напр. [1,3].\n- [ВПИШИ ОТВЕТ] → строка с ответом.\n- [ЧИСЛО] → только число, без единиц и текста (десятичная точка).\nВерни ТОЛЬКО JSON-объект, где ключи — номера вопросов: {"1": ответ, "2": ответ}. Никаких пояснений. Пример: {"1": 2, "2": [1,3], "3": "10^18 wei"}`,
       page.quizItemCount
     );
 
@@ -1449,7 +1509,7 @@ function detectShuffle(prevOptions, currOptions) {
 }
 
 function baseQuizRequest(count) {
-  return `Ниже тест из ${count} вопросов. Ответь по типу каждого вопроса:\n- [ОДИН ВАРИАНТ] → номер правильного варианта в скобках (целое число, отсчёт с 1).\n- [ОДИН ВАРИАНТ (выпадающий)] → тоже номер пункта в скобках.\n- [ВЫБЕРИ ВСЕ ВЕРНЫЕ] → массив номеров в скобках, напр. [1,3].\n- [ВПИШИ ОТВЕТ] → строка с ответом.\n- [ЧИСЛО] → только число, без единиц и текста (десятичная точка).\nВерни ТОЛЬКО JSON-массив из ${count} элементов в порядке вопросов, без пояснений. Пример: [1, [1,3], "AB", 2]`;
+  return `Ниже тест из ${count} вопросов. Ответь по типу каждого вопроса:\n- [ОДИН ВАРИАНТ] → номер правильного варианта в скобках (целое число, отсчёт с 1).\n- [ОДИН ВАРИАНТ (выпадающий)] → тоже номер пункта в скобках.\n- [ВЫБЕРИ ВСЕ ВЕРНЫЕ] → массив номеров в скобках, напр. [1,3].\n- [ВПИШИ ОТВЕТ] → строка с ответом.\n- [ЧИСЛО] → только число, без единиц и текста (десятичная точка).\nВерни ТОЛЬКО JSON-объект, где ключи — номера вопросов: {"1": ответ, "2": ответ}. Никаких пояснений. Пример: {"1": 2, "2": [1,3], "3": "10^18 wei"}`;
 }
 
 function retryQuizRequest(count, statuses, lastAnswers, triedList, mode) {
@@ -1479,7 +1539,7 @@ function retryQuizRequest(count, statuses, lastAnswers, triedList, mode) {
         .join("\n")
     : "";
 
-  return `Ты уже отвечал на этот тест и НЕ прошёл. Твои прошлые ответы и результат указаны выше.\nСтатусы по вопросам:\n${statusLine || "неизвестны"}\n\nПравила: не повторяй варианты, которые уже были неверными; для вопросов со статусом ВЕРНЫЙ оставь тот же ответ; учитывай обратную связь со страницы результатов.\nВерни ТОЛЬКО JSON-массив из ${count} элементов в порядке вопросов.\nФормат: [ОДИН ВАРИАНТ] → номер в скобках (отсчёт с 1), [ОДИН ВАРИАНТ (выпадающий)] → номер пункта в скобках, [ВЫБЕРИ ВСЕ ВЕРНЫЕ] → массив номеров в скобках, [ВПИШИ ОТВЕТ] → строка, [ЧИСЛО] → только число без единиц. Пример: [1, [1,3], "AB", 2]`;
+  return `Ты уже отвечал на этот тест и НЕ прошёл. Твои прошлые ответы и результат указаны выше.\nСтатусы по вопросам:\n${statusLine || "неизвестны"}\n\nПравила: не повторяй варианты, которые уже были неверными; для вопросов со статусом ВЕРНЫЙ оставь тот же ответ; учитывай обратную связь со страницы результатов.\nВерни ТОЛЬКО JSON-объект, где ключи — номера вопросов.\nФормат значения: [ОДИН ВАРИАНТ] → номер в скобках (отсчёт с 1), [ОДИН ВАРИАНТ (выпадающий)] → номер пункта в скобках, [ВЫБЕРИ ВСЕ ВЕРНЫЕ] → массив номеров в скобках, [ВПИШИ ОТВЕТ] → строка, [ЧИСЛО] → только число без единиц. Пример: {"1": 2, "2": [1,3], "3": "AB"}`;
 }
 
 async function extractFullText(tabId) {
